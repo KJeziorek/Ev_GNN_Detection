@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from models.layers.my_pointnet import MyPointNetConv
 from models.layers.my_linear import MyLinear
+from models.layers.my_pooling import LIFSpikePool
 
 class BlockConv(torch.nn.Module):
     def __init__(self, 
@@ -48,17 +49,11 @@ class BACKBONE(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.block1 = BlockConv(1, 
-                                16)
-
-        self.block2 = BlockConv(16, 
-                                32)
-
-        self.block3 = BlockConv(32, 
-                                64)
-
-        self.block4 = BlockConv(64, 
-                                64)
+        self.block1 = BlockConv(1,16)
+        self.pool1 = LIFSpikePool(16, 16, 24, 18, (240,180))
+        self.block2 = BlockConv(16,32)
+        self.block3 = BlockConv(32,64)
+        self.block4 = BlockConv(64,64)
         
         self.initialize_weights()
          
@@ -75,8 +70,10 @@ class BACKBONE(torch.nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x, pos, edge_index):
-        x = self.block1(x, pos, edge_index)
-        x = self.block2(x, pos, edge_index)
-        x = self.block3(x, pos, edge_index)
-        x = self.block4(x, pos, edge_index)
-        return x
+        x1 = self.block1(x, pos, edge_index)
+        x1, pos, edge_index = self.pool1(x1, pos, edge_index.T, pos[:, -1])
+        edge_index = edge_index.T
+        x2 = self.block2(x1, pos, edge_index)
+        x3 = self.block3(x2, pos, edge_index)
+        x4 = self.block4(x3, pos, edge_index)
+        return x4
