@@ -20,7 +20,7 @@ from time import time
 from torchmetrics.detection import MeanAveragePrecision
 
 from datasets.ncaltech101 import NCaltech101
-from models.model import Detection
+from models.detection import Detection
 
 
 def train_one_epoch(model, loader, optimizer, device, epoch):
@@ -68,29 +68,12 @@ def train_one_epoch(model, loader, optimizer, device, epoch):
 @torch.no_grad()
 def validate(model, loader, device):
     model.eval()
-    total_loss = 0.0
-    total_iou = 0.0
-    total_conf = 0.0
-    total_cls = 0.0
-    n_batches = 0
 
     map_metric = MeanAveragePrecision(iou_type="bbox").to(device)
 
     for batch in loader:
         batch = batch.to(device)
 
-        # Run in training mode briefly to compute losses on val set
-        model.train()
-        loss_outputs = model(batch)
-        model.eval()
-
-        total_loss += loss_outputs["total_loss"].item()
-        total_iou += loss_outputs["iou_loss"].item() if torch.is_tensor(loss_outputs["iou_loss"]) else loss_outputs["iou_loss"]
-        total_conf += loss_outputs["conf_loss"].item() if torch.is_tensor(loss_outputs["conf_loss"]) else loss_outputs["conf_loss"]
-        total_cls += loss_outputs["cls_loss"].item() if torch.is_tensor(loss_outputs["cls_loss"]) else loss_outputs["cls_loss"]
-        n_batches += 1
-
-        # Inference predictions for mAP
         preds = model(batch)
 
         # Build ground-truth targets from batch bboxes
@@ -120,12 +103,7 @@ def validate(model, loader, device):
         map_metric.update(preds, targets)
 
     map_results = map_metric.compute()
-    n = max(n_batches, 1)
     return {
-        "loss": total_loss / n,
-        "iou": total_iou / n,
-        "conf": total_conf / n,
-        "cls": total_cls / n,
         "mAP": map_results["map"].item(),
         "mAP_50": map_results["map_50"].item(),
         "mAP_75": map_results["map_75"].item(),
@@ -182,7 +160,7 @@ def main():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Training loop ─────────────────────────────────────────────────────
-    best_val_loss = float("inf")
+    best_val_map = 0.0
     patience_counter = 0
     patience = train_cfg.get("patience", 20)
 
@@ -201,27 +179,24 @@ def main():
             f"iou={train_metrics['iou']:.4f} "
             f"conf={train_metrics['conf']:.4f} "
             f"cls={train_metrics['cls']:.4f}\n"
-            f"  val:   loss={val_metrics['loss']:.4f} "
-            f"iou={val_metrics['iou']:.4f} "
-            f"conf={val_metrics['conf']:.4f} "
-            f"cls={val_metrics['cls']:.4f}\n"
             f"  mAP={val_metrics['mAP']:.4f} "
             f"mAP_50={val_metrics['mAP_50']:.4f} "
             f"mAP_75={val_metrics['mAP_75']:.4f}"
         )
 
         # ── Checkpointing ────────────────────────────────────────────────
-        is_best = val_metrics["loss"] < best_val_loss
+        val_map = val_metrics["mAP_50"]
+        is_best = val_map > best_val_map
         if is_best:
-            best_val_loss = val_metrics["loss"]
+            best_val_map = val_map
             patience_counter = 0
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": best_val_loss,
+                "val_mAP_50": best_val_map,
             }, ckpt_dir / "best.pt")
-            print(f"  * New best val loss: {best_val_loss:.4f}")
+            print(f"  * New best mAP_50: {best_val_map:.4f}")
         else:
             patience_counter += 1
 
@@ -230,7 +205,7 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_metrics["loss"],
+                "val_mAP_50": val_map,
             }, ckpt_dir / f"epoch_{epoch}.pt")
 
         # ── Early stopping ────────────────────────────────────────────────
@@ -238,7 +213,7 @@ def main():
             print(f"Early stopping at epoch {epoch} (no improvement for {patience} epochs)")
             break
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
+    print(f"\nTraining complete. Best mAP_50: {best_val_map:.4f}")
     print(f"Best checkpoint: {ckpt_dir / 'best.pt'}")
 
 

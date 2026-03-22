@@ -47,7 +47,7 @@ class LIFSpikePool(QuantizableLayer):
                  grid_h=24, grid_w=18,
                  spatial_range=(240, 180),
                  fired_history_len=4,
-                 num_bins=50):
+                 num_bins=10):
         super().__init__()
 
         self.grid_h = grid_h
@@ -57,17 +57,16 @@ class LIFSpikePool(QuantizableLayer):
         self.num_bins = num_bins
         self.out_channels = out_channels
 
-        # Fixed grid positions
-        gx = torch.linspace(0, spatial_range[0], grid_w)
-        gy = torch.linspace(0, spatial_range[1], grid_h)
+        # Fixed grid positions (cell centers, consistent with detection stride)
+        self.cell_w = spatial_range[0] / grid_w
+        self.cell_h = spatial_range[1] / grid_h
+        gx = torch.arange(grid_w).float() * self.cell_w + self.cell_w / 2
+        gy = torch.arange(grid_h).float() * self.cell_h + self.cell_h / 2
         grid_y, grid_x = torch.meshgrid(gy, gx, indexing='ij')
         self.register_buffer(
             'neuron_pos',
-            torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1).round()
+            torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
         )  # [num_neurons, 2]
-
-        self.cell_w = spatial_range[0] / max(grid_w - 1, 1)
-        self.cell_h = spatial_range[1] / max(grid_h - 1, 1)
 
         # 8-connected grid adjacency [A, 2]
         self.register_buffer(
@@ -107,8 +106,8 @@ class LIFSpikePool(QuantizableLayer):
 
     def _route_to_grid(self, pos):
         """Map event (x, y) positions to grid cell indices. pos: [N, 2+]."""
-        col = (pos[:, 0] / self.cell_w).clamp(0, self.grid_w - 1).long()
-        row = (pos[:, 1] / self.cell_h).clamp(0, self.grid_h - 1).long()
+        col = (pos[:, 0] / self.cell_w).long().clamp(0, self.grid_w - 1)
+        row = (pos[:, 1] / self.cell_h).long().clamp(0, self.grid_h - 1)
         return row * self.grid_w + col
 
     # ------------------------------------------------------------------
