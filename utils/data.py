@@ -10,6 +10,7 @@ class GraphData:
     batch: torch.Tensor | None = None  # [N] sample index per node
     bboxes: torch.Tensor | None = None
     batch_bb: torch.Tensor | None = None
+    target: torch.Tensor | None = None
 
     def clone(self):
         return GraphData(

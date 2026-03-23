@@ -3,12 +3,25 @@ import numpy as np
 import torch
 import lightning as L
 
+from enum import Enum
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 
-
 from utils.data import GraphData
+from utils.convert_bbox import convert_to_training_format
 from datasets.graph_gen.matrix_neighbour import GraphGenerator
+from datasets.augmentations.augmentation import (
+    Compose, RandomHFlip, RandomCrop, RandomZoom, RandomTranslate, Crop
+)
+
+
+class SliceMethod(Enum):
+    FIRST_BY_TIME = "first_by_time"
+    LAST_BY_TIME = "last_by_time"
+    MID_BY_TIME = "mid_by_time"
+    FIRST_BY_COUNT = "first_by_count"
+    LAST_BY_COUNT = "last_by_count"
+    MID_BY_COUNT = "mid_by_count"
 
 
 class NCaltech101Dataset(Dataset):
@@ -36,9 +49,35 @@ class NCaltech101Dataset(Dataset):
 
         self.width = cfg.get("sensor_width", 240)
         self.height = cfg.get("sensor_height", 180)
+
+        self.norm_w = cfg.get("norm_w", 240)
+        self.norm_h = cfg.get("norm_h", 180)
+        self.norm_t = cfg.get("norm_t", 1000)
+
         self.num_events = cfg.get("num_events", 50000)
+        self.sample_len = cfg.get("sample_len", 50000)
+        self.slice_method = SliceMethod(cfg.get("slice_method", "mid_by_time"))
 
         self.generator = GraphGenerator(width=self.width, height=self.height)
+
+        aug_cfg = cfg.get("augmentation", {})
+        if augment:
+            self.transform = Compose([
+                RandomHFlip(p=aug_cfg.get("hflip_p", 0.5), width=self.width),
+                RandomCrop(size=aug_cfg.get("crop_size", [0.75, 0.75]),
+                           p=aug_cfg.get("crop_p", 0.2),
+                           width=self.width, height=self.height),
+                RandomZoom(zoom=tuple(aug_cfg.get("zoom_range", [1.0, 1.5])),
+                           subsample=aug_cfg.get("zoom_subsample", True),
+                           width=self.width, height=self.height),
+                RandomTranslate(size=aug_cfg.get("translate_size", [0.1, 0.1]),
+                                width=self.width, height=self.height),
+                Crop([0, 0], [1, 1], width=self.width, height=self.height),
+            ])
+        else:
+            self.transform = Compose([
+                Crop([0, 0], [1, 1], width=self.width, height=self.height),
+            ])
 
     def __len__(self):
         return len(self.samples)
@@ -50,25 +89,64 @@ class NCaltech101Dataset(Dataset):
         bbox = NCaltech101.load_annotations(ann_path)
 
         # Limit number of events
-        events = events[:self.num_events]
+        events = self.slice_events(events)
 
-        # bbox is [x, y, w, h] -> prepend class_id to get [class_id, x, y, w, h]
-        bbox = np.concatenate([[class_idx], bbox]).astype(np.float32)
-        bbox = bbox.reshape(1, 5)  # (1, 5) — single bbox per sample
+        # Augment in pixel space before normalization
+        bbox = torch.tensor(np.append(bbox, class_idx), dtype=torch.float32).unsqueeze(0)
+        events, bbox = self.transform(events, bbox)
+
+        events = self.normalize_events(events)
 
         # Generate graph
         x, pos, edge_index = self.generator.generate_edges(
             events,
             radius_x=self.cfg.get("radius_x", 5),
             radius_y=self.cfg.get("radius_y", 5),
-            radius_t=self.cfg.get("radius_t", 0.001),
+            radius_t=self.cfg.get("radius_t", 5),
         )
 
         self.generator.clear()
+        return GraphData(x=x, pos=pos, edge_index=edge_index, bboxes=bbox)
+    
+    def slice_events(self, events):
+        if self.slice_method == SliceMethod.FIRST_BY_TIME:
+            min_time = events[:, 2].min()
+            events = events[events[:, 2] < min_time + self.sample_len]
+        elif self.slice_method == SliceMethod.LAST_BY_TIME:
+            max_time = events[:, 2].max()
+            events = events[events[:, 2] > max_time - self.sample_len]
+        elif self.slice_method == SliceMethod.MID_BY_TIME:
+            min_time = events[:, 2].min()
+            max_time = events[:, 2].max()
+            mid_time = (min_time + max_time) / 2
+            half_len = self.sample_len / 2
+            events = events[(events[:, 2] >= mid_time - half_len) & (events[:, 2] < mid_time + half_len)]
+        elif self.slice_method == SliceMethod.FIRST_BY_COUNT:
+            events = events[:self.num_events]
+        elif self.slice_method == SliceMethod.LAST_BY_COUNT:
+            events = events[-self.num_events:]
+        elif self.slice_method == SliceMethod.MID_BY_COUNT:
+            n = len(events)
+            half = self.num_events // 2
+            mid = n // 2
+            events = events[mid - half:mid - half + self.num_events]
+        return events
+    
+    def normalize_events(self, events):
+        # Ensure polarity is -1/1
+        events[:, 3] = torch.where(events[:, 3] >= 0, 1.0, -1.0)
 
-        bboxes = torch.from_numpy(bbox).to(dtype=torch.float32)
-        
-        return GraphData(x=x, pos=pos, edge_index=edge_index, bboxes=bboxes)
+        # Normalize to [0, 1] using sensor dims, then scale to norm targets
+        events[:, 0] = (events[:, 0] / self.width * self.norm_w).floor()
+        events[:, 1] = (events[:, 1] / self.height * self.norm_h).floor()
+        t_min, t_max = events[:, 2].min(), events[:, 2].max()
+        t_range = t_max - t_min
+        if t_range > 0:
+            events[:, 2] = ((events[:, 2] - t_min) / t_range * self.norm_t).floor()
+        else:
+            events[:, 2] = 0.0
+        return events
+
 
 
 class NCaltech101(L.LightningDataModule):
@@ -82,6 +160,9 @@ class NCaltech101(L.LightningDataModule):
         self.train_ratio = cfg.get("train_ratio", 0.7)
         self.val_ratio = cfg.get("val_ratio", 0.15)
 
+        self.batch_size = cfg.get("batch_size", 16)
+        self.num_workers = cfg.get('num_workers', 8)
+
     @staticmethod
     def load_events(raw_file: str):
         f = open(raw_file, 'rb')
@@ -93,7 +174,6 @@ class NCaltech101(L.LightningDataModule):
         all_x = raw_data[0::5]
         all_p = (raw_data[2::5] & 128) >> 7  # bit 7
         all_ts = ((raw_data[2::5] & 127) << 16) | (raw_data[3::5] << 8) | (raw_data[4::5])
-        all_ts = all_ts / 1e6  # µs -> s
         all_p = all_p.astype(np.float64)
         all_p[all_p == 0] = -1
         events = np.column_stack((all_x, all_y, all_ts, all_p))
@@ -184,36 +264,40 @@ class NCaltech101(L.LightningDataModule):
             bboxes = torch.empty((0, 5), dtype=torch.float32)
             batch_bb = torch.empty((0,), dtype=torch.long)
 
+
         batch = torch.cat([
             torch.full((d.x.shape[0],), i, dtype=torch.long)
             for i, d in enumerate(data_list)
         ], dim=0)
+
+        target = convert_to_training_format(bboxes, batch_bb, batch.max().item()+1)
 
         return GraphData(x=x, 
                          pos=pos,
                          edge_index=edge_index,
                          batch=batch,
                          bboxes=bboxes,
-                         batch_bb=batch_bb)
+                         batch_bb=batch_bb,
+                         target=target)
 
     def train_dataloader(self):
         return DataLoader(self.train_data,
-                          batch_size=self.cfg.get('batch_size', 32),
-                          num_workers=self.cfg.get('num_workers', 16),
+                          batch_size=self.batch_size,
+                          num_workers=self.num_workers,
                           shuffle=True,
                           collate_fn=self.collate_fn)
 
     def val_dataloader(self):
         return DataLoader(self.val_data,
-                          batch_size=self.cfg.get('batch_size', 32),
-                          num_workers=self.cfg.get('num_workers', 16),
+                          batch_size=self.batch_size,
+                          num_workers=self.num_workers,
                           shuffle=False,
                           collate_fn=self.collate_fn)
 
     def test_dataloader(self):
         return DataLoader(self.test_data,
-                          batch_size=self.cfg.get('batch_size', 32),
-                          num_workers=self.cfg.get('num_workers', 16),
+                          batch_size=self.batch_size,
+                          num_workers=self.num_workers,
                           shuffle=False,
                           collate_fn=self.collate_fn)
 

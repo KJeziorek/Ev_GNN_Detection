@@ -6,7 +6,8 @@ import yaml
 import torch
 from time import time
 from datasets.ncaltech101 import NCaltech101
-from models.model import Detection
+
+from models.detection import Detection
 
 
 # ── Load config ──────────────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ print(f"Classes: {dm.num_classes}")
 print(f"Train: {len(dm.train_data)}, Val: {len(dm.val_data)}, Test: {len(dm.test_data)}")
 
 # ── Setup model ──────────────────────────────────────────────────────────────
-model = Detection(num_classes=num_classes, spatial_range=spatial_range).to(device)
+model = Detection().to(device).eval()
 
 
 # ── Run evaluation on a few batches ──────────────────────────────────────────
@@ -43,14 +44,8 @@ for i, batch in enumerate(test_loader):
     batch = batch.to(device)
 
     with torch.no_grad():
-        outputs = model(batch)
+        print(model(batch))
     
-    print(outputs)
-    t1 = time()
 
-    # outputs is a list of dicts with boxes/scores/labels
-    # n_dets = sum(r["boxes"].shape[0] for r in outputs)
-    # print(f"Batch {i}: detections={n_dets}, time={t1 - t0:.3f}s")
-
-    if i >= 4:
+    if i >= 0:
         break

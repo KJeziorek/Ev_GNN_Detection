@@ -4,10 +4,25 @@ data:
   data_dir: /home/imperator/Datasets/NCaltech101
   sensor_width: 240
   sensor_height: 180
-  num_events: 999999999
+  num_events: 50000
+  sample_len: 100000
+  slice_method: mid_by_time  # first_by_time, last_by_time, first_by_count, last_by_count
   train_ratio: 0.7
   val_ratio: 0.15
   seed: 42
+
+norm:
+  norm_w: 240
+  norm_h: 180
+  norm_t: 10
+
+augmentation:
+  hflip_p: 0.5
+  crop_size: [0.75, 0.75]
+  crop_p: 0.2
+  zoom_range: [1.0, 1.5]
+  zoom_subsample: true
+  translate_size: [0.1, 0.1]
 
 graph:
   radius_x: 5
@@ -15,11 +30,11 @@ graph:
   radius_t: 0.001
 
 model:
-  num_classes: 100           # 101 classes minus BACKGROUND_Google
+  num_classes: 100
   spatial_range: [240, 180]
 
 training:
-  batch_size: 4
+  batch_size: 8
   num_workers: 4
   epochs: 200
   learning_rate: 0.001

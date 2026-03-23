@@ -1,73 +1,40 @@
 import torch
 import torch.nn as nn
-from torch.nn import BatchNorm1d
 
-from models.layers.my_pointnet import MyPointNetConv
-from models.layers.my_linear import MyLinear
-from models.layers.my_pooling import LIFSpikePool
+from models.layers.network_blocks import BlockConv
+from models.layers.pooling import GraphPooling
+from models.layers.norm import BatchNorm
+from models.layers.linear import LinearX
 from utils.data import GraphData
-
-
-class BlockConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        self.conv1 = MyPointNetConv(in_channels + 2, out_channels)
-        self.norm1 = BatchNorm1d(out_channels)
-        self.conv2 = MyPointNetConv(out_channels + 2, out_channels)
-        self.norm2 = BatchNorm1d(out_channels)
-
-        self.linear = MyLinear(in_channels, out_channels)
-        self.norm_linear = BatchNorm1d(out_channels)
-
-    def forward(self, data):
-        if data.x.size(0) == 0:
-            data.x = torch.zeros(0, self.out_channels, device=data.x.device)
-            return data
-
-        x_skip = self.norm_linear(self.linear(data.x))
-
-        x = self.conv1(data.x, data.pos[:, :2], data.edge_index)
-        x = torch.nn.functional.relu(self.norm1(x))
-
-        x = self.conv2(x, data.pos[:, :2], data.edge_index)
-        x = self.norm2(x)
-
-        x = torch.nn.functional.relu(x + x_skip)
-        data.x = x
-        return data
-
 
 class BACKBONE(nn.Module):
     def __init__(self):
         super().__init__()
 
         self.block1 = BlockConv(1, 16)
-        self.pool1 = LIFSpikePool(16, 16, 80, 60, (240, 180))
+        self.pool1 = GraphPooling((240/80, 180/60, 1))
 
         self.block2 = BlockConv(16, 32)
-        self.pool2 = LIFSpikePool(32, 32, 40, 30, (240, 180))
+        self.pool2 = GraphPooling((80/40, 60/30, 1))
 
         self.block3 = BlockConv(32, 64)
-        self.pool3 = LIFSpikePool(64, 64, 20, 15, (240, 180))
+        self.pool3 = GraphPooling((40/20, 30/15, 1))
 
         self.block4 = BlockConv(64, 128)
 
-        self.initialize_weights()
+        # self.initialize_weights()
 
     def initialize_weights(self):
         for m in self.modules():
-            if isinstance(m, BatchNorm1d):
+            if isinstance(m, BatchNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
+            elif isinstance(m, LinearX):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, data):
+    def forward(self, data: GraphData):
         """
         Multi-scale forward pass.
 
@@ -83,7 +50,6 @@ class BACKBONE(nn.Module):
               scale 2 — after pool3  (20×15 grid, 64 ch → 64 ch)
         """
         # --- Scale 0: full res → 80×60 ---
-
         data = self.block1(data)
         data = self.pool1(data)
         data = self.block2(data)

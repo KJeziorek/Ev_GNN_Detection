@@ -1,221 +1,277 @@
-"""Training script for event-based GNN detection.
+"""
+Training script for point-based GNN YOLOX detection on NCaltech101.
 
 Usage:
-    python scripts/train.py --config configs/ncaltech101.yaml
+    python -m scripts.train --config configs/ncaltech101.yaml
 """
 
 import argparse
-import sys
 import os
-from pathlib import Path
+import sys
+import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure project root is on sys.path when running as a script
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import yaml
 import torch
+import yaml
+
+from tqdm import tqdm
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from time import time
-
 from torchmetrics.detection import MeanAveragePrecision
 
-from datasets.ncaltech101 import NCaltech101
 from models.detection import Detection
+from datasets.ncaltech101 import NCaltech101
 
 
-def train_one_epoch(model, loader, optimizer, device, epoch):
-    model.train()
-    total_loss = 0.0
-    total_iou = 0.0
-    total_conf = 0.0
-    total_cls = 0.0
-    n_batches = 0
+def labels_to_torchmetrics(labels):
+    """
+    Convert training-format labels to torchmetrics target format.
 
-    for i, batch in enumerate(loader):
-        batch = batch.to(device)
+    Args:
+        labels: [B, max_det, 5]  (class_id, cx, cy, w, h) in pixels.
+                Padding rows have all zeros.
 
-        outputs = model(batch)
-        loss = outputs["total_loss"]
+    Returns:
+        list[dict] with "boxes" (xyxy), "labels" (int) per image.
+    """
+    targets = []
+    for b in range(labels.shape[0]):
+        lab = labels[b]
+        valid = lab.sum(dim=1) > 0
+        lab = lab[valid]
 
-        optimizer.zero_grad()
-        if loss.grad_fn is not None and torch.isfinite(loss):
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            optimizer.step()
-
-        total_loss += loss.item()
-        total_iou += outputs["iou_loss"].item() if torch.is_tensor(outputs["iou_loss"]) else outputs["iou_loss"]
-        total_conf += outputs["conf_loss"].item() if torch.is_tensor(outputs["conf_loss"]) else outputs["conf_loss"]
-        total_cls += outputs["cls_loss"].item() if torch.is_tensor(outputs["cls_loss"]) else outputs["cls_loss"]
-        n_batches += 1
-
-        if (i + 1) % 50 == 0:
-            print(f"  [{i+1}/{len(loader)}] loss={loss.item():.4f} "
-                  f"iou={outputs['iou_loss']:.4f} "
-                  f"conf={outputs['conf_loss']:.4f} "
-                  f"cls={outputs['cls_loss']:.4f} "
-                  f"num_fg={outputs['num_fg']:.1f}")
-
-    n = max(n_batches, 1)
-    return {
-        "loss": total_loss / n,
-        "iou": total_iou / n,
-        "conf": total_conf / n,
-        "cls": total_cls / n,
-    }
-
-
-@torch.no_grad()
-def validate(model, loader, device):
-    model.eval()
-
-    map_metric = MeanAveragePrecision(iou_type="bbox").to(device)
-
-    for batch in loader:
-        batch = batch.to(device)
-
-        preds = model(batch)
-
-        # Build ground-truth targets from batch bboxes
-        B = batch.batch.max().item() + 1 if batch.batch is not None else 1
-        targets = []
-        for b in range(B):
-            if batch.bboxes is not None and batch.bboxes.numel() > 0:
-                mask = batch.batch_bb == b
-                bbs = batch.bboxes[mask]
-                # bboxes format: [class_id, x_tl, y_tl, w, h] -> xyxy
-                boxes = torch.stack([
-                    bbs[:, 1],
-                    bbs[:, 2],
-                    bbs[:, 1] + bbs[:, 3],
-                    bbs[:, 2] + bbs[:, 4],
-                ], dim=1)
-                targets.append({
-                    "boxes": boxes,
-                    "labels": bbs[:, 0].long(),
-                })
-            else:
-                targets.append({
-                    "boxes": torch.zeros(0, 4, device=device),
-                    "labels": torch.zeros(0, dtype=torch.long, device=device),
-                })
-
-        map_metric.update(preds, targets)
-
-    map_results = map_metric.compute()
-    return {
-        "mAP": map_results["map"].item(),
-        "mAP_50": map_results["map_50"].item(),
-        "mAP_75": map_results["map_75"].item(),
-    }
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/ncaltech101.yaml")
-    args = parser.parse_args()
-
-    # ── Config ────────────────────────────────────────────────────────────
-    with open(args.config) as f:
-        raw_cfg = yaml.safe_load(f)
-
-    data_cfg = {**raw_cfg["data"], **raw_cfg["graph"]}
-    data_cfg["batch_size"] = raw_cfg["training"]["batch_size"]
-    data_cfg["num_workers"] = raw_cfg["training"]["num_workers"]
-
-    train_cfg = raw_cfg["training"]
-    log_cfg = raw_cfg["logging"]
-    device = raw_cfg.get("device", "cuda")
-    num_classes = raw_cfg["model"]["num_classes"]
-    spatial_range = tuple(raw_cfg["model"]["spatial_range"])
-
-    torch.manual_seed(raw_cfg["data"].get("seed", 42))
-
-    # ── Dataset ───────────────────────────────────────────────────────────
-    dm = NCaltech101(data_cfg)
-    dm.setup()
-
-    print(f"Classes: {dm.num_classes}")
-    print(f"Train: {len(dm.train_data)}, Val: {len(dm.val_data)}, Test: {len(dm.test_data)}")
-
-    train_loader = dm.train_dataloader()
-    val_loader = dm.val_dataloader()
-
-    # ── Model ─────────────────────────────────────────────────────────────
-    model = Detection(num_classes=num_classes, spatial_range=spatial_range).to(device)
-
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Parameters: {n_params:,}")
-
-    # ── Optimizer & scheduler ─────────────────────────────────────────────
-    optimizer = AdamW(
-        model.parameters(),
-        lr=train_cfg["learning_rate"],
-        weight_decay=train_cfg["weight_decay"],
-    )
-    scheduler = CosineAnnealingLR(optimizer, T_max=train_cfg["epochs"])
-
-    # ── Checkpointing setup ───────────────────────────────────────────────
-    ckpt_dir = Path(log_cfg["checkpoint_dir"])
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── Training loop ─────────────────────────────────────────────────────
-    best_val_map = 0.0
-    patience_counter = 0
-    patience = train_cfg.get("patience", 20)
-
-    for epoch in range(1, train_cfg["epochs"] + 1):
-        t0 = time()
-
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device, epoch)
-        val_metrics = validate(model, val_loader, device)
-        scheduler.step()
-
-        t1 = time()
-        lr = optimizer.param_groups[0]["lr"]
-        print(
-            f"Epoch {epoch}/{train_cfg['epochs']} ({t1 - t0:.1f}s) lr={lr:.2e}\n"
-            f"  train: loss={train_metrics['loss']:.4f} "
-            f"iou={train_metrics['iou']:.4f} "
-            f"conf={train_metrics['conf']:.4f} "
-            f"cls={train_metrics['cls']:.4f}\n"
-            f"  mAP={val_metrics['mAP']:.4f} "
-            f"mAP_50={val_metrics['mAP_50']:.4f} "
-            f"mAP_75={val_metrics['mAP_75']:.4f}"
-        )
-
-        # ── Checkpointing ────────────────────────────────────────────────
-        val_map = val_metrics["mAP_50"]
-        is_best = val_map > best_val_map
-        if is_best:
-            best_val_map = val_map
-            patience_counter = 0
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_mAP_50": best_val_map,
-            }, ckpt_dir / "best.pt")
-            print(f"  * New best mAP_50: {best_val_map:.4f}")
+        if lab.shape[0] == 0:
+            targets.append({
+                "boxes":  torch.zeros(0, 4, device=labels.device),
+                "labels": torch.zeros(0, dtype=torch.long, device=labels.device),
+            })
         else:
-            patience_counter += 1
+            cls_ids = lab[:, 0].long()
+            cx, cy, w, h = lab[:, 1], lab[:, 2], lab[:, 3], lab[:, 4]
+            boxes_xyxy = torch.stack([
+                cx - w / 2, cy - h / 2,
+                cx + w / 2, cy + h / 2,
+            ], dim=1)
+            targets.append({"boxes": boxes_xyxy, "labels": cls_ids})
+    return targets
 
-        if epoch % log_cfg.get("save_every", 10) == 0:
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_mAP_50": val_map,
-            }, ckpt_dir / f"epoch_{epoch}.pt")
 
-        # ── Early stopping ────────────────────────────────────────────────
-        if patience_counter >= patience:
-            print(f"Early stopping at epoch {epoch} (no improvement for {patience} epochs)")
-            break
+class Trainer:
+    def __init__(self, model, train_loader, val_loader, cfg):
+        self.device = cfg.get("device", "cuda")
+        train_cfg = cfg.get("training", {})
+        self.epochs = train_cfg.get("epochs", 100)
+        self.warmup_epochs = train_cfg.get("warmup_epochs", 5)
+        self.log_interval = train_cfg.get("log_interval", 50)
+        self.patience = train_cfg.get("patience", 20)
 
-    print(f"\nTraining complete. Best mAP_50: {best_val_map:.4f}")
-    print(f"Best checkpoint: {ckpt_dir / 'best.pt'}")
+        log_cfg = cfg.get("logging", {})
+        self.save_dir = log_cfg.get("checkpoint_dir", "checkpoints")
+        self.save_every = log_cfg.get("save_every", 10)
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        self.model = model.to(self.device)
+
+        lr = train_cfg.get("learning_rate", 1e-3)
+        self.base_lr = lr
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=lr,
+            weight_decay=train_cfg.get("weight_decay", 1e-4),
+        )
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=self.epochs)
+
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+
+        self.map_metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox")
+        self.best_map = 0.0
+
+    # ---- Warmup LR ----
+
+    def _warmup_lr(self, epoch, step, steps_per_epoch):
+        total_warmup_steps = self.warmup_epochs * steps_per_epoch
+        current_step = epoch * steps_per_epoch + step
+        if current_step < total_warmup_steps:
+            lr = self.base_lr * current_step / max(total_warmup_steps, 1)
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
+
+    # ---- Train one epoch ----
+
+    def train_one_epoch(self, epoch):
+        self.model.train()
+
+        total_loss_sum = 0.0
+        iou_loss_sum = 0.0
+        obj_loss_sum = 0.0
+        cls_loss_sum = 0.0
+        num_batches = 0
+        steps_per_epoch = len(self.train_loader)
+
+        pbar = tqdm(self.train_loader, desc=f"Train {epoch+1}/{self.epochs}", leave=True)
+
+        for step, data in enumerate(pbar):
+            if epoch < self.warmup_epochs:
+                self._warmup_lr(epoch, step, steps_per_epoch)
+
+            data = data.to(self.device)
+            outputs = self.model(data)
+
+            total_loss = outputs["total_loss"]
+            iou_loss = outputs["iou_loss"]
+            obj_loss = outputs["conf_loss"]
+            cls_loss = outputs["cls_loss"]
+
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+            self.optimizer.step()
+
+            total_loss_sum += total_loss.item()
+            iou_loss_sum += iou_loss.item() if isinstance(iou_loss, torch.Tensor) else iou_loss
+            obj_loss_sum += obj_loss.item() if isinstance(obj_loss, torch.Tensor) else obj_loss
+            cls_loss_sum += cls_loss.item() if isinstance(cls_loss, torch.Tensor) else cls_loss
+            num_batches += 1
+
+            pbar.set_postfix({
+                "loss": f"{total_loss_sum/num_batches:.4f}",
+                "iou":  f"{iou_loss_sum/num_batches:.4f}",
+                "obj":  f"{obj_loss_sum/num_batches:.4f}",
+                "cls":  f"{cls_loss_sum/num_batches:.4f}",
+                "lr":   f"{self.optimizer.param_groups[0]['lr']:.6f}",
+            })
+
+        if epoch >= self.warmup_epochs:
+            self.scheduler.step()
+
+        return total_loss_sum / max(num_batches, 1)
+
+    # ---- Validate one epoch ----
+
+    @torch.no_grad()
+    def validate(self, epoch):
+        self.model.eval()
+        self.map_metric.reset()
+
+        pbar = tqdm(self.val_loader, desc=f"Val   {epoch+1}/{self.epochs}", leave=True)
+
+        for data in pbar:
+            data = data.to(self.device)
+
+            predictions = self.model(data)
+            targets = labels_to_torchmetrics(data.target)
+
+            preds_cpu = [{k: v.cpu() for k, v in p.items()} for p in predictions]
+            targets_cpu = [{k: v.cpu() for k, v in t.items()} for t in targets]
+            self.map_metric.update(preds_cpu, targets_cpu)
+
+        metrics = self.map_metric.compute()
+        map_50 = metrics["map_50"].item()
+        map_75 = metrics["map_75"].item()
+        map_all = metrics["map"].item()
+
+        print(
+            f"Epoch {epoch+1} val: "
+            f"mAP@50={map_50:.4f} "
+            f"mAP@75={map_75:.4f} "
+            f"mAP@50:95={map_all:.4f}"
+        )
+        return map_50, map_all
+
+    # ---- Save / Load ----
+
+    def save_checkpoint(self, epoch, map_50, is_best=False):
+        state = {
+            "epoch": epoch,
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
+            "map_50": map_50,
+        }
+        path = os.path.join(self.save_dir, "last.pth")
+        torch.save(state, path)
+
+        if is_best:
+            best_path = os.path.join(self.save_dir, "best.pth")
+            torch.save(state, best_path)
+            print(f"  -> New best model saved (mAP@50={map_50:.4f})")
+
+    def load_checkpoint(self, path):
+        state = torch.load(path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(state["model"])
+        self.optimizer.load_state_dict(state["optimizer"])
+        if "scheduler" in state:
+            self.scheduler.load_state_dict(state["scheduler"])
+        print(f"Loaded checkpoint from {path} (epoch {state['epoch']+1})")
+        return state["epoch"]
+
+    # ---- Main loop ----
+
+    def fit(self):
+        epochs_no_improve = 0
+        for epoch in range(self.epochs):
+            print(f"\n{'='*60}")
+            print(f"Epoch {epoch+1}/{self.epochs}")
+            print(f"{'='*60}")
+
+            train_loss = self.train_one_epoch(epoch)
+            map_50, map_all = self.validate(epoch)
+
+            is_best = map_50 > self.best_map
+            if is_best:
+                self.best_map = map_50
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+
+            self.save_checkpoint(epoch, map_50, is_best=is_best)
+
+            if (epoch + 1) % self.save_every == 0:
+                path = os.path.join(self.save_dir, f"epoch_{epoch+1}.pth")
+                torch.save(self.model.state_dict(), path)
+
+            if epochs_no_improve >= self.patience:
+                print(f"Early stopping after {self.patience} epochs without improvement.")
+                break
+
+        print(f"\nTraining complete. Best mAP@50={self.best_map:.4f}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/ncaltech101.yaml")
+    parser.add_argument("--resume", type=str, default=None)
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+
+    # Flatten nested config for dataset (it expects a flat dict)
+    ds_cfg = {**cfg.get("data", {}), **cfg.get("norm", {}),
+              **cfg.get("augmentation", {}), **cfg.get("graph", {})}
+
+    # Build datamodule and setup splits
+    datamodule = NCaltech101(ds_cfg)
+    datamodule.setup()
+
+    print(f"Classes: {datamodule.num_classes}")
+    print(f"Train: {len(datamodule.train_data)}, Val: {len(datamodule.val_data)}, Test: {len(datamodule.test_data)}")
+
+    # Build model
+    model = Detection()
+
+    # Build trainer
+    trainer = Trainer(
+        model=model,
+        train_loader=datamodule.train_dataloader(),
+        val_loader=datamodule.val_dataloader(),
+        cfg=cfg,
+    )
+
+    if args.resume:
+        trainer.load_checkpoint(args.resume)
+
+    trainer.fit()
