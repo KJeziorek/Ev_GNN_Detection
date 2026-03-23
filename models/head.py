@@ -65,19 +65,19 @@ class HEAD(nn.Module):
         pos2d = data.pos[:, :2]
         ei = data.edge_index
 
-        x = self.stem(data.x, pos2d, ei)
+        x = self.stem(data.x, pos2d/240, ei)
         x = torch.nn.functional.relu(self.stem_norm(x))
 
         x_copy = x.clone()
 
-        x1 = self.conv1(x_copy, pos2d, ei)
+        x1 = self.conv1(x_copy, pos2d/240, ei)
         x1 = torch.nn.functional.relu(self.conv1_norm(x1))
 
-        x2 = self.conv2(x, pos2d, ei)
+        x2 = self.conv2(x, pos2d/240, ei)
         x2 = torch.nn.functional.relu(self.conv2_norm(x2))
 
-        reg = self.regr(x1.clone(), pos2d, ei)
-        obj = self.obj(x1, pos2d, ei)
-        cls = self.cls(x2, pos2d, ei)
+        reg = self.regr(x1.clone(), pos2d/240, ei)
+        obj = self.obj(x1, pos2d/240, ei)
+        cls = self.cls(x2, pos2d/240, ei)
 
         return cls, reg, obj

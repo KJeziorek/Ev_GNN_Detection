@@ -4,7 +4,7 @@ data:
   data_dir: /home/imperator/Datasets/NCaltech101
   sensor_width: 240
   sensor_height: 180
-  num_events: 999999999
+  num_events: 50000
   train_ratio: 0.7
   val_ratio: 0.15
   seed: 42

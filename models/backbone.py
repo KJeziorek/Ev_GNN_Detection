@@ -5,6 +5,7 @@ from torch.nn import BatchNorm1d
 from models.layers.my_pointnet import MyPointNetConv
 from models.layers.my_linear import MyLinear
 from models.layers.my_pooling import LIFSpikePool
+from models.layers.my_max_pool import MyGraphPooling
 from utils.data import GraphData
 
 
@@ -16,6 +17,7 @@ class BlockConv(nn.Module):
 
         self.conv1 = MyPointNetConv(in_channels + 2, out_channels)
         self.norm1 = BatchNorm1d(out_channels)
+
         self.conv2 = MyPointNetConv(out_channels + 2, out_channels)
         self.norm2 = BatchNorm1d(out_channels)
 
@@ -23,17 +25,15 @@ class BlockConv(nn.Module):
         self.norm_linear = BatchNorm1d(out_channels)
 
     def forward(self, data):
-        if data.x.size(0) == 0:
-            data.x = torch.zeros(0, self.out_channels, device=data.x.device)
-            return data
+        x_skip = data.x.clone()
 
-        x_skip = self.norm_linear(self.linear(data.x))
-
-        x = self.conv1(data.x, data.pos[:, :2], data.edge_index)
+        x = self.conv1(data.x, data.pos[:, :2]/240, data.edge_index)
         x = torch.nn.functional.relu(self.norm1(x))
 
-        x = self.conv2(x, data.pos[:, :2], data.edge_index)
+        x = self.conv2(x, data.pos[:, :2]/240, data.edge_index)
         x = self.norm2(x)
+
+        x_skip = self.norm_linear(self.linear(x_skip))
 
         x = torch.nn.functional.relu(x + x_skip)
         data.x = x
@@ -45,15 +45,18 @@ class BACKBONE(nn.Module):
         super().__init__()
 
         self.block1 = BlockConv(1, 16)
-        self.pool1 = LIFSpikePool(16, 16, 80, 60, (240, 180))
+        # self.pool1 = LIFSpikePool(16, 16, 80, 60, (240, 180))
+        self.pool1 = MyGraphPooling(pool_size=[3, 3, 1])
 
-        self.block2 = BlockConv(16, 32)
-        self.pool2 = LIFSpikePool(32, 32, 40, 30, (240, 180))
+        self.block2 = BlockConv(16, 64)
+        # self.pool2 = LIFSpikePool(64, 64, 40, 30, (240, 180))
+        self.pool2 = MyGraphPooling(pool_size=[2, 2, 1])
 
-        self.block3 = BlockConv(32, 64)
-        self.pool3 = LIFSpikePool(64, 64, 20, 15, (240, 180))
+        self.block3 = BlockConv(64, 128)
+        # self.pool3 = LIFSpikePool(128, 128, 20, 15, (240, 180))
+        self.pool3 = MyGraphPooling(pool_size=[2, 2, 1])
 
-        self.block4 = BlockConv(64, 128)
+        self.block4 = BlockConv(128, 128)
 
         self.initialize_weights()
 
@@ -85,21 +88,23 @@ class BACKBONE(nn.Module):
         # --- Scale 0: full res → 80×60 ---
 
         data = self.block1(data)
+        feat_s0 = data.clone()
+
         data = self.pool1(data)
         data = self.block2(data)
 
-        feat_s0 = data.clone()
+        feat_s1 = data.clone()
 
         # --- Scale 1: 80×60 → 40×30 ---
         data = self.pool2(data)
         data = self.block3(data)
 
-        feat_s1 = data.clone()
+        feat_s2 = data.clone()
 
         # --- Scale 2: 40×30 → 20×15 ---
         data = self.pool3(data)
         data = self.block4(data)
 
-        feat_s2 = data.clone()
+        feat_s3 = data.clone()
 
-        return [feat_s0, feat_s1, feat_s2]
+        return [feat_s3]
