@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
+from models.layers.linear import LinearX
 from models.layers.pointnet import PointNetConv
 from models.layers.network_blocks import BaseConv
 from utils.focal_loss import FocalLoss
@@ -108,7 +109,7 @@ class YOLOXHead(nn.Module):
         self,
         num_classes,
         strides=[3, 6, 12],
-        in_channels=[32, 64, 128],
+        in_channels=[64, 128, 256],
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -141,27 +142,11 @@ class YOLOXHead(nn.Module):
                     out_channels=int(in_channels[i]),
                 )
             )
-            self.cls_preds.append(
-                PointNetConv(
-                    in_channels=int(in_channels[i]),
-                    out_channels=self.num_classes,
-                    bias=True,
-                )
-            )
-            self.reg_preds.append(
-                PointNetConv(
-                    in_channels=int(in_channels[i]),
-                    out_channels=4,
-                    bias=True,
-                )
-            )
-            self.obj_preds.append(
-                PointNetConv(
-                    in_channels=int(in_channels[i]),
-                    out_channels=1,
-                    bias=True,
-                )
-            )
+            
+            self.cls_preds.append(LinearX(int(in_channels[i]), self.num_classes))
+            self.reg_preds.append(LinearX(int(in_channels[i]), 4))
+            self.obj_preds.append(LinearX(int(in_channels[i]), 1))
+
 
         # ---- losses ----
         self.bcewithlog_loss = nn.BCEWithLogitsLoss(reduction="none")
@@ -176,32 +161,27 @@ class YOLOXHead(nn.Module):
     def initialize_parameters(self, prior_prob=0.01):
         bias_value = -math.log((1 - prior_prob) / prior_prob)
 
-        # --- obj and cls heads ---
-        for pred_list in [self.obj_preds, self.cls_preds]:
-            for conv in pred_list:
-                nn.init.kaiming_normal_(conv.linear.weight, nonlinearity='relu')
-                conv.linear.weight.data *= 0.1
-                nn.init.zeros_(conv.linear.bias)
+        # --- cls head: small weights + prior bias so initial sigmoid ≈ 0.01 ---
+        for linear in self.cls_preds:
+            nn.init.normal_(linear.weight, mean=0, std=0.01)
+            nn.init.constant_(linear.bias, bias_value)
 
-                nn.init.normal_(conv.global_nn.weight, mean=0, std=0.001)
-                nn.init.constant_(conv.global_nn.bias, bias_value)
+        # --- obj head: same prior bias trick ---
+        for linear in self.obj_preds:
+            nn.init.normal_(linear.weight, mean=0, std=0.01)
+            nn.init.constant_(linear.bias, bias_value)
 
-        # --- reg heads ---
-        for conv in self.reg_preds:
-            nn.init.kaiming_normal_(conv.linear.weight, nonlinearity='relu')
-            conv.linear.weight.data *= 0.1
-            nn.init.zeros_(conv.linear.bias)
+        # --- reg head: small weights + zero bias (no prior for box offsets) ---
+        for linear in self.reg_preds:
+            nn.init.normal_(linear.weight, mean=0, std=0.01)
+            nn.init.zeros_(linear.bias)
 
-            nn.init.normal_(conv.global_nn.weight, mean=0, std=0.001)
-            nn.init.zeros_(conv.global_nn.bias)
-
-        # --- backbone shared convs (BaseConv wraps PointNetConv) ---
+        # --- backbone shared convs (stems, cls_convs, reg_convs) ---
         for conv_list in [self.stems, self.cls_convs, self.reg_convs]:
             for base_conv in conv_list:
                 nn.init.kaiming_normal_(base_conv.conv.linear.weight, nonlinearity='relu')
                 nn.init.zeros_(base_conv.conv.linear.bias)
                 nn.init.kaiming_normal_(base_conv.conv.global_nn.weight, nonlinearity='relu')
-                # global_nn has bias=False in BaseConv, so no bias init needed
 
     # ------------------------------------------------------------------
     # Forward
@@ -231,11 +211,10 @@ class YOLOXHead(nn.Module):
             cls_data = data.clone()
 
             cls_feat = cls_conv(cls_data)
-            cls_output = self.cls_preds[k](cls_feat).x       # [N_k, num_cls]
-
             reg_feat = reg_conv(data)
             obj_feat = reg_feat.clone()
 
+            cls_output = self.cls_preds[k](cls_feat).x       # [N_k, num_cls]
             reg_output = self.reg_preds[k](reg_feat).x       # [N_k, 4]
             obj_output = self.obj_preds[k](obj_feat).x       # [N_k, 1]
 
@@ -416,7 +395,7 @@ class YOLOXHead(nn.Module):
         else:
             loss_cls = torch.tensor(0.0, device=device, requires_grad=True)
 
-        reg_weight = 5.0
+        reg_weight = 1.0
         total_loss = reg_weight * loss_iou + loss_obj + loss_cls
 
         return (

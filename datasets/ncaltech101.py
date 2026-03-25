@@ -160,8 +160,8 @@ class NCaltech101(L.LightningDataModule):
         self.train_ratio = cfg.get("train_ratio", 0.7)
         self.val_ratio = cfg.get("val_ratio", 0.15)
 
-        self.batch_size = cfg.get("batch_size", 16)
-        self.num_workers = cfg.get('num_workers', 8)
+        self.batch_size = cfg.get("batch_size", 8)
+        self.num_workers = cfg.get('num_workers', 4)
 
     @staticmethod
     def load_events(raw_file: str):

@@ -16,7 +16,7 @@ class Detection(nn.Module):
         super().__init__()
 
         self.backbone = BACKBONE()
-        self.head = YOLOXHead(num_classes=100, strides=[3, 6, 12], in_channels=[32, 64, 128])
+        self.head = YOLOXHead(num_classes=100, strides=[12], in_channels=[256])
 
     def forward(self, data):
         fpn_outs = self.backbone(data)

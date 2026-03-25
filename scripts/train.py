@@ -263,6 +263,8 @@ if __name__ == "__main__":
     # Build model
     model = Detection()
 
+    print(model)
+
     # Build trainer
     trainer = Trainer(
         model=model,

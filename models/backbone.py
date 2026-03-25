@@ -11,16 +11,16 @@ class BACKBONE(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.block1 = BlockConv(1, 16)
+        self.block1 = BlockConv(1, 32)
         self.pool1 = GraphPooling((240/80, 180/60, 1))
 
-        self.block2 = BlockConv(16, 32)
+        self.block2 = BlockConv(32, 64)
         self.pool2 = GraphPooling((80/40, 60/30, 1))
 
-        self.block3 = BlockConv(32, 64)
+        self.block3 = BlockConv(64, 128)
         self.pool3 = GraphPooling((40/20, 30/15, 1))
 
-        self.block4 = BlockConv(64, 128)
+        self.block4 = BlockConv(128, 256)
 
         # self.initialize_weights()
 
@@ -68,4 +68,4 @@ class BACKBONE(nn.Module):
 
         feat_s2 = data.clone()
 
-        return [feat_s0, feat_s1, feat_s2]
+        return [feat_s2]
