@@ -265,6 +265,10 @@ if __name__ == "__main__":
 
     print(model)
 
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total: {total:,} | Trainable: {trainable:,}")
+
     # Build trainer
     trainer = Trainer(
         model=model,

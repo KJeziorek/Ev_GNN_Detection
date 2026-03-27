@@ -14,7 +14,7 @@ data:
 norm:
   norm_w: 240
   norm_h: 180
-  norm_t: 10
+  norm_t: 1000
 
 augmentation:
   hflip_p: 0.5
@@ -27,7 +27,7 @@ augmentation:
 graph:
   radius_x: 5
   radius_y: 5
-  radius_t: 0.001
+  radius_t: 1
 
 model:
   num_classes: 100

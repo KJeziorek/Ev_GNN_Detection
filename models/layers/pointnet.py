@@ -75,4 +75,4 @@ class PointNetConv(nn.Module):
 
     def __repr__(self) -> str:
         return (f"{self.__class__.__name__}("
-                f"in_channels={self.in_channels}, out_channels={self.out_channels}, bias={self.bias}")
+                f"in_channels={self.in_channels}, out_channels={self.out_channels}, bias={self.bias})")

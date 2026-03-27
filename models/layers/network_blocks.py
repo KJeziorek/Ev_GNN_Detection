@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from utils.data import GraphData
 from models.layers.pointnet import PointNetConv
+from models.layers.minmaxconv import MinMaxConv
 from models.layers.linear import LinearX
 from models.layers.norm import BatchNorm
 

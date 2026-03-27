@@ -12,7 +12,7 @@ class BACKBONE(nn.Module):
         super().__init__()
 
         self.block1 = BlockConv(1, 32)
-        self.pool1 = GraphPooling((240/80, 180/60, 1))
+        self.pool1 = GraphPooling((240/80, 180/60, 10))
 
         self.block2 = BlockConv(32, 64)
         self.pool2 = GraphPooling((80/40, 60/30, 1))
@@ -54,7 +54,7 @@ class BACKBONE(nn.Module):
         data = self.pool1(data)
         data = self.block2(data)
 
-        feat_s0 = data.clone()
+        # feat_s0 = data.clone()
 
         # --- Scale 1: 80×60 → 40×30 ---
         data = self.pool2(data)

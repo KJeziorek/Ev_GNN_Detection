@@ -7,6 +7,7 @@ import torchvision
 
 from models.layers.linear import LinearX
 from models.layers.pointnet import PointNetConv
+from models.layers.norm import BatchNorm
 from models.layers.network_blocks import BaseConv
 from utils.focal_loss import FocalLoss
 
@@ -161,27 +162,39 @@ class YOLOXHead(nn.Module):
     def initialize_parameters(self, prior_prob=0.01):
         bias_value = -math.log((1 - prior_prob) / prior_prob)
 
-        # --- cls head: small weights + prior bias so initial sigmoid ≈ 0.01 ---
-        for linear in self.cls_preds:
-            nn.init.normal_(linear.weight, mean=0, std=0.01)
-            nn.init.constant_(linear.bias, bias_value)
+        def init_conv_module(module):
+            """Recursively init all Linear layers inside a conv module with Kaiming."""
+            for m in module.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+                elif isinstance(m, (nn.BatchNorm1d, BatchNorm)):
+                    nn.init.constant_(m.weight, 1)
+                    nn.init.constant_(m.bias, 0)
 
-        # --- obj head: same prior bias trick ---
-        for linear in self.obj_preds:
-            nn.init.normal_(linear.weight, mean=0, std=0.01)
-            nn.init.constant_(linear.bias, bias_value)
+        def init_pred_head(module, bias_init=0.0):
+            """Init a prediction head — works for nn.Linear, nn.Sequential, or custom conv."""
+            for m in module.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, mean=0, std=0.01)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, bias_init)
 
-        # --- reg head: small weights + zero bias (no prior for box offsets) ---
-        for linear in self.reg_preds:
-            nn.init.normal_(linear.weight, mean=0, std=0.01)
-            nn.init.zeros_(linear.bias)
-
-        # --- backbone shared convs (stems, cls_convs, reg_convs) ---
+        # --- backbone shared convs ---
         for conv_list in [self.stems, self.cls_convs, self.reg_convs]:
             for base_conv in conv_list:
-                nn.init.kaiming_normal_(base_conv.conv.linear.weight, nonlinearity='relu')
-                nn.init.zeros_(base_conv.conv.linear.bias)
-                nn.init.kaiming_normal_(base_conv.conv.global_nn.weight, nonlinearity='relu')
+                init_conv_module(base_conv)
+
+        # --- prediction heads ---
+        for pred in self.cls_preds:
+            init_pred_head(pred, bias_init=bias_value)
+
+        for pred in self.obj_preds:
+            init_pred_head(pred, bias_init=bias_value)
+
+        for pred in self.reg_preds:
+            init_pred_head(pred, bias_init=0.0)
 
     # ------------------------------------------------------------------
     # Forward

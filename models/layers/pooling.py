@@ -75,7 +75,7 @@ class GraphPooling(nn.Module):
         ei = torch.cat([ei, loop], dim=0)
         
         data.x = pooled_x
-        data.pos = uniq_qpos
+        data.pos = uniq_qpos.float()
         data.edge_index = ei
         data.batch = new_batch
 
