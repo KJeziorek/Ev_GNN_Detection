@@ -16,10 +16,10 @@ class BACKBONE(nn.Module):
         self.pool1 = GraphPooling((240/48, 180/36, 10))
         self.block2 = BlockConv(16, 64)
 
-        self.pool2 = GraphPooling((48/24, 36/18, 10))
+        self.pool2 = GraphPooling((48/24, 36/18, 1))
         self.block3 = BlockConv(64, 128)
 
-        self.pool3 = GraphPooling((24/12, 18/9, 10))
+        self.pool3 = GraphPooling((24/12, 18/9, 1))
         self.block4 = BlockConv(128, 256)
 
         self.pool4 = GraphPooling((12/12, 9/9, 1))
@@ -33,7 +33,7 @@ class BACKBONE(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, LinearX):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
