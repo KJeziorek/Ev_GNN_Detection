@@ -11,18 +11,21 @@ class BACKBONE(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.block1 = BlockConv(1, 32)
-        self.pool1 = GraphPooling((240/80, 180/60, 10))
+        self.block1 = BlockConv(1, 16)
 
-        self.block2 = BlockConv(32, 64)
-        self.pool2 = GraphPooling((80/40, 60/30, 1))
+        self.pool1 = GraphPooling((240/48, 180/36, 10))
+        self.block2 = BlockConv(16, 64)
 
+        self.pool2 = GraphPooling((48/24, 36/18, 10))
         self.block3 = BlockConv(64, 128)
-        self.pool3 = GraphPooling((40/20, 30/15, 1))
 
+        self.pool3 = GraphPooling((24/12, 18/9, 10))
         self.block4 = BlockConv(128, 256)
 
-        # self.initialize_weights()
+        self.pool4 = GraphPooling((12/12, 9/9, 1))
+        self.block5 = BlockConv(256, 256)
+
+        self.initialize_weights()
 
     def initialize_weights(self):
         for m in self.modules():
@@ -51,20 +54,22 @@ class BACKBONE(nn.Module):
         """
         # --- Scale 0: full res → 80×60 ---
         data = self.block1(data)
+
         data = self.pool1(data)
         data = self.block2(data)
-
-        # feat_s0 = data.clone()
 
         # --- Scale 1: 80×60 → 40×30 ---
         data = self.pool2(data)
         data = self.block3(data)
 
-        feat_s1 = data.clone()
-
         # --- Scale 2: 40×30 → 20×15 ---
         data = self.pool3(data)
         data = self.block4(data)
+
+        # feat_s1 = data.clone()
+
+        data = self.pool4(data)
+        data = self.block5(data)
 
         feat_s2 = data.clone()
 

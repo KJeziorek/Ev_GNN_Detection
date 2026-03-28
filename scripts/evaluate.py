@@ -91,7 +91,21 @@ batch = next(iter(test_loader)).to(device)
 
 # ── run backbone stage-by-stage ──────────────────────────────────────────────
 
-backbone = BACKBONE().to(device).eval()
+backbone = BACKBONE().to(device)
+
+# load pretrained weights from Detection checkpoint
+ckpt_path = Path(__file__).resolve().parent.parent / "checkpoints" / "ncaltech101" / "best.pth"
+if ckpt_path.exists():
+    state = torch.load(ckpt_path, map_location=device, weights_only=False)
+    full_sd = state["model"] if "model" in state else state
+    # extract backbone.* keys and strip the prefix
+    bb_sd = {k.replace("backbone.", "", 1): v for k, v in full_sd.items() if k.startswith("backbone.")}
+    backbone.load_state_dict(bb_sd)
+    print(f"Loaded backbone weights from {ckpt_path}")
+else:
+    print(f"WARNING: {ckpt_path} not found — using random weights")
+
+backbone.eval()
 
 with torch.no_grad():
     input_data = batch.clone()
@@ -117,6 +131,12 @@ with torch.no_grad():
     data = backbone.block4(data)
     after_block4 = data.clone()
 
+    data = backbone.pool4(data)
+    after_pool4 = data.clone()
+
+    data = backbone.block5(data)
+    after_block5 = data.clone()
+
 # ── plot ─────────────────────────────────────────────────────────────────────
 
 stages = [
@@ -128,9 +148,11 @@ stages = [
     ("After block3",     after_block3),
     ("After pool3",      after_pool3),
     ("After block4",     after_block4),
+    ("After pool4",      after_pool4),
+    ("After block5",     after_block5),
 ]
 
-fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+fig, axes = plt.subplots(2, 5, figsize=(30, 12))
 axes = axes.flatten()
 
 for ax, (title, data) in zip(axes, stages):
@@ -144,10 +166,10 @@ print("Saved to backbone_graph_vis.png")
 
 # ── 3D plot ─────────────────────────────────────────────────────────────────
 
-fig3d = plt.figure(figsize=(28, 14))
+fig3d = plt.figure(figsize=(35, 14))
 
 for i, (title, data) in enumerate(stages):
-    ax = fig3d.add_subplot(2, 4, i + 1, projection='3d')
+    ax = fig3d.add_subplot(2, 5, i + 1, projection='3d')
     plot_graph_3d(data, title, ax)
 
 fig3d.suptitle("3D graph visualisation (x, y, t) through backbone stages", fontsize=16)

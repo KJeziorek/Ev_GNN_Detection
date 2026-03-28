@@ -46,8 +46,8 @@ class PointNetConv(nn.Module):
 
         x, pos, edge_index = data.x, data.pos[:, :2], data.edge_index
 
-        pos_i = pos[edge_index[:, 0]]
-        pos_j = pos[edge_index[:, 1]]
+        pos_i = pos[edge_index[:, 0]] /5
+        pos_j = pos[edge_index[:, 1]] /5
         x_j = x[edge_index[:, 1]]
         msg = torch.cat((x_j, pos_j - pos_i), dim=1)
         msg = self.linear(msg)

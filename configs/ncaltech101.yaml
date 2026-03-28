@@ -20,14 +20,14 @@ augmentation:
   hflip_p: 0.5
   crop_size: [0.75, 0.75]
   crop_p: 0.2
-  zoom_range: [1.0, 1.5]
+  zoom_range: [0.5, 1.5]
   zoom_subsample: true
   translate_size: [0.1, 0.1]
 
 graph:
   radius_x: 5
   radius_y: 5
-  radius_t: 1
+  radius_t: 5
 
 model:
   num_classes: 100
@@ -38,7 +38,7 @@ training:
   num_workers: 4
   epochs: 200
   learning_rate: 0.001
-  weight_decay: 0.0005
+  weight_decay: 0.00005
   patience: 20
 
 logging:

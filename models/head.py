@@ -119,6 +119,7 @@ class YOLOXHead(nn.Module):
         # ---- network layers (same as your template) ----
         self.cls_convs = nn.ModuleList()
         self.reg_convs = nn.ModuleList()
+        self.obj_convs = nn.ModuleList()
         self.cls_preds = nn.ModuleList()
         self.reg_preds = nn.ModuleList()
         self.obj_preds = nn.ModuleList()
@@ -143,6 +144,12 @@ class YOLOXHead(nn.Module):
                     out_channels=int(in_channels[i]),
                 )
             )
+            self.obj_convs.append(
+                BaseConv(
+                    in_channels=int(in_channels[i]),
+                    out_channels=int(in_channels[i]),
+                )
+            )
             
             self.cls_preds.append(LinearX(int(in_channels[i]), self.num_classes))
             self.reg_preds.append(LinearX(int(in_channels[i]), 4))
@@ -152,7 +159,7 @@ class YOLOXHead(nn.Module):
         # ---- losses ----
         self.bcewithlog_loss = nn.BCEWithLogitsLoss(reduction="none")
         self.obj_focal_loss = FocalLoss(alpha=0.25, gamma=2.0, reduction="none")
-        self.iou_loss = IOUloss(reduction="none")
+        self.iou_loss = IOUloss(reduction="none", loss_type="giou")
 
         self.initialize_parameters()
     # ------------------------------------------------------------------
@@ -182,7 +189,7 @@ class YOLOXHead(nn.Module):
                         nn.init.constant_(m.bias, bias_init)
 
         # --- backbone shared convs ---
-        for conv_list in [self.stems, self.cls_convs, self.reg_convs]:
+        for conv_list in [self.stems, self.cls_convs, self.reg_convs, self.obj_convs]:
             for base_conv in conv_list:
                 init_conv_module(base_conv)
 
@@ -217,15 +224,16 @@ class YOLOXHead(nn.Module):
         all_strides = []     # stride per event (scalar repeated)
         all_batches = []     # batch index per event
 
-        for k, (cls_conv, reg_conv, stride_this_level, data) in enumerate(
-            zip(self.cls_convs, self.reg_convs, self.strides, data_in)
+        for k, (cls_conv, reg_conv, obj_conv, stride_this_level, data) in enumerate(
+            zip(self.cls_convs, self.reg_convs, self.obj_convs, self.strides, data_in)
         ):
             data = self.stems[k](data)
             cls_data = data.clone()
+            obj_data = data.clone()
 
             cls_feat = cls_conv(cls_data)
             reg_feat = reg_conv(data)
-            obj_feat = reg_feat.clone()
+            obj_feat = obj_conv(obj_data)
 
             cls_output = self.cls_preds[k](cls_feat).x       # [N_k, num_cls]
             reg_output = self.reg_preds[k](reg_feat).x       # [N_k, 4]
@@ -269,7 +277,7 @@ class YOLOXHead(nn.Module):
         decoded = self.decode_outputs(outputs, positions, strides)
 
         if self.training:
-            return self.get_losses(decoded, strides, batches, labels)
+            return self.get_losses(decoded, strides, batches, labels, positions)
         else:
             return self.postprocess(decoded, batches)
 
@@ -300,7 +308,7 @@ class YOLOXHead(nn.Module):
     # Loss (point-based SimOTA)
     # ------------------------------------------------------------------
 
-    def get_losses(self, decoded, strides, batches, labels):
+    def get_losses(self, decoded, strides, batches, labels, positions):
         dtype = decoded.dtype
         device = decoded.device
         B = int(batches.max().item()) + 1
@@ -326,7 +334,7 @@ class YOLOXHead(nn.Module):
             obj_preds_b  = decoded[mask_b, 4:5]
             cls_preds_b  = decoded[mask_b, 5:]
             strides_b    = strides[mask_b]
-            anchor_xy_b  = decoded[mask_b, :2].detach()
+            anchor_xy_b  = positions[mask_b] * strides_b.unsqueeze(-1)
 
             num_gt = int(nlabel[b])
             num_gts += num_gt
@@ -345,9 +353,8 @@ class YOLOXHead(nn.Module):
                     gt_matched_classes, fg_mask_local,
                     pred_ious_this_matching, matched_gt_inds, num_fg_img,
                 ) = self.get_assignments(
-                    num_gt, gt_bboxes, gt_classes,
-                    bbox_preds_b, strides_b, anchor_xy_b,
-                    cls_preds_b, obj_preds_b,
+                    gt_bboxes, gt_classes,
+                    bbox_preds_b, anchor_xy_b,
                 )
             except RuntimeError as e:
                 if "CUDA out of memory" not in str(e):
@@ -357,9 +364,8 @@ class YOLOXHead(nn.Module):
                     gt_matched_classes, fg_mask_local,
                     pred_ious_this_matching, matched_gt_inds, num_fg_img,
                 ) = self.get_assignments(
-                    num_gt, gt_bboxes, gt_classes,
-                    bbox_preds_b, strides_b, anchor_xy_b,
-                    cls_preds_b, obj_preds_b,
+                    gt_bboxes, gt_classes,
+                    bbox_preds_b, anchor_xy_b,
                     mode="cpu",
                 )
 
@@ -419,115 +425,82 @@ class YOLOXHead(nn.Module):
             num_fg / max(num_gts, 1),
         )
     # ------------------------------------------------------------------
-    # SimOTA assignment (point-based)
+    # Inside-GT-box assignment (sparse event-based)
     # ------------------------------------------------------------------
 
     @torch.no_grad()
     def get_assignments(
         self,
-        num_gt,
         gt_bboxes_per_image,
         gt_classes,
         bboxes_preds_per_image,
-        expanded_strides,
         anchor_centers,
-        cls_preds,
-        obj_preds,
         mode="gpu",
     ):
         """
-        Point-based SimOTA assignment for one image.
+        Assigns each event as foreground if its pixel-space position falls
+        inside at least one GT bounding box.  Events inside multiple boxes
+        are assigned to the smallest-area GT.
 
-        Args:
-            num_gt:                 int
-            gt_bboxes_per_image:    [G, 4]  (cx, cy, w, h) pixels
-            gt_classes:             [G]
-            bboxes_preds_per_image: [N, 4]  decoded (cx, cy, w, h) pixels
-            expanded_strides:       [N]     stride per event
-            anchor_centers:         [N, 2]  event centres in pixel space
-            cls_preds:              [N, C]  raw logits
-            obj_preds:              [N, 1]  raw logits
-            mode:                   "gpu" | "cpu"
-
-        Returns:
-            (gt_matched_classes, fg_mask, pred_ious, matched_gt_inds, num_fg)
+        No IoU cost, no geometry radius, no dynamic-k — so the assignment
+        is stable from epoch 1 and scales to any number of sparse events.
         """
         if mode == "cpu":
-            gt_bboxes_per_image = gt_bboxes_per_image.cpu().float()
+            gt_bboxes_per_image    = gt_bboxes_per_image.cpu().float()
             bboxes_preds_per_image = bboxes_preds_per_image.cpu().float()
-            gt_classes = gt_classes.cpu().float()
-            expanded_strides = expanded_strides.cpu().float()
-            anchor_centers = anchor_centers.cpu().float()
-            cls_preds = cls_preds.cpu().float()
-            obj_preds = obj_preds.cpu().float()
+            gt_classes             = gt_classes.cpu().float()
+            anchor_centers         = anchor_centers.cpu().float()
 
-        # Step 1: geometry pre-filter
-        fg_mask, geometry_relation = self.get_geometry_constraint(
-            gt_bboxes_per_image, expanded_strides, anchor_centers,
-        )
+        # GT box corners  [G, 1]
+        gt_x1 = (gt_bboxes_per_image[:, 0] - gt_bboxes_per_image[:, 2] / 2).unsqueeze(1)
+        gt_y1 = (gt_bboxes_per_image[:, 1] - gt_bboxes_per_image[:, 3] / 2).unsqueeze(1)
+        gt_x2 = (gt_bboxes_per_image[:, 0] + gt_bboxes_per_image[:, 2] / 2).unsqueeze(1)
+        gt_y2 = (gt_bboxes_per_image[:, 1] + gt_bboxes_per_image[:, 3] / 2).unsqueeze(1)
 
-        bboxes_preds_filtered = bboxes_preds_per_image[fg_mask]
-        cls_preds_filtered = cls_preds[fg_mask]
-        obj_preds_filtered = obj_preds[fg_mask]
-        num_in_boxes_anchor = bboxes_preds_filtered.shape[0]
+        ax = anchor_centers[:, 0].unsqueeze(0)  # [1, N]
+        ay = anchor_centers[:, 1].unsqueeze(0)  # [1, N]
 
-        if num_in_boxes_anchor == 0:
-            # No candidate events for any GT — return empty assignment
-            device = gt_classes.device
+        # inside[g, n] = True if event n is inside GT box g  [G, N]
+        inside = (ax >= gt_x1) & (ax <= gt_x2) & (ay >= gt_y1) & (ay <= gt_y2)
+
+        fg_mask = inside.any(dim=0)   # [N]
+        num_fg  = int(fg_mask.sum().item())
+
+        if num_fg == 0:
             return (
                 gt_classes.new_zeros(0),
-                fg_mask,                   # all-False
+                fg_mask,
                 gt_bboxes_per_image.new_zeros(0),
                 gt_classes.new_zeros(0, dtype=torch.long),
                 0,
             )
 
-        # Step 2: pairwise IoU between GT boxes and candidate predictions
-        pair_wise_ious = bboxes_iou(
-            gt_bboxes_per_image, bboxes_preds_filtered, xyxy=False
-        )                                                    # [G, N_cand]
+        # Assign each fg event to the smallest GT it sits inside
+        gt_areas  = gt_bboxes_per_image[:, 2] * gt_bboxes_per_image[:, 3]  # [G]
+        area_cost = gt_areas.unsqueeze(1).expand_as(inside).clone().float()
+        area_cost[~inside] = float('inf')
+        matched_gt_inds = area_cost.argmin(dim=0)[fg_mask]                  # [num_fg]
 
-        gt_cls_per_image = (
-            F.one_hot(gt_classes.to(torch.int64), self.num_classes).float()
-        )
-        pair_wise_ious_loss = -torch.log(pair_wise_ious + 1e-8)
+        gt_matched_classes = gt_classes[matched_gt_inds]
 
-        # Step 3: pairwise classification cost
-        with torch.amp.autocast("cuda", enabled=False):
-            cls_preds_ = (
-                cls_preds_filtered.float().sigmoid_()
-                * obj_preds_filtered.float().sigmoid_()
-            ).sqrt()
-            pair_wise_cls_loss = F.binary_cross_entropy(
-                cls_preds_.unsqueeze(0).repeat(num_gt, 1, 1),
-                gt_cls_per_image.unsqueeze(1).repeat(1, num_in_boxes_anchor, 1),
-                reduction="none",
-            ).sum(-1)                                        # [G, N_cand]
-        del cls_preds_
+        # Per-pair IoU(matched_gt_i, pred_i) — used to soft-weight cls targets
+        fg_preds    = bboxes_preds_per_image[fg_mask]                       # [num_fg, 4]
+        matched_gts = gt_bboxes_per_image[matched_gt_inds]                  # [num_fg, 4]
 
-        # Step 4: cost matrix
-        cost = (
-            pair_wise_cls_loss
-            + 3.0 * pair_wise_ious_loss
-            + float(1e6) * (~geometry_relation)
-        )
-
-        # Step 5: SimOTA matching
-        (
-            num_fg,
-            gt_matched_classes,
-            pred_ious_this_matching,
-            matched_gt_inds,
-        ) = self.simota_matching(
-            cost, pair_wise_ious, gt_classes, num_gt, fg_mask,
-        )
-        del pair_wise_cls_loss, cost, pair_wise_ious, pair_wise_ious_loss
+        a_x1y1 = matched_gts[:, :2] - matched_gts[:, 2:4] / 2
+        a_x2y2 = matched_gts[:, :2] + matched_gts[:, 2:4] / 2
+        b_x1y1 = fg_preds[:, :2]    - fg_preds[:, 2:4]    / 2
+        b_x2y2 = fg_preds[:, :2]    + fg_preds[:, 2:4]    / 2
+        inter   = (torch.min(a_x2y2, b_x2y2) - torch.max(a_x1y1, b_x1y1)).clamp(min=0).prod(1)
+        area_a  = (a_x2y2 - a_x1y1).prod(1)
+        area_b  = (b_x2y2 - b_x1y1).prod(1)
+        pred_ious_this_matching = (inter / (area_a + area_b - inter + 1e-16)).clamp(min=0)
 
         if mode == "cpu":
-            gt_matched_classes = gt_matched_classes.cuda()
-            fg_mask = fg_mask.cuda()
+            gt_matched_classes      = gt_matched_classes.cuda()
+            fg_mask                 = fg_mask.cuda()
             pred_ious_this_matching = pred_ious_this_matching.cuda()
-            matched_gt_inds = matched_gt_inds.cuda()
+            matched_gt_inds         = matched_gt_inds.cuda()
 
         return (
             gt_matched_classes,
@@ -536,93 +509,6 @@ class YOLOXHead(nn.Module):
             matched_gt_inds,
             num_fg,
         )
-
-    # ------------------------------------------------------------------
-    # Geometry constraint (point-based)
-    # ------------------------------------------------------------------
-
-    def get_geometry_constraint(
-        self, gt_bboxes_per_image, expanded_strides, anchor_centers,
-    ):
-        """
-        For each GT, find candidate events whose pixel-space centre lies
-        within  center_radius × stride  of the GT centre.
-
-        This is the point-based analog of YOLOX's grid-cell centre check.
-
-        Args:
-            gt_bboxes_per_image: [G, 4]  (cx, cy, w, h) pixels
-            expanded_strides:    [N]     stride per event
-            anchor_centers:      [N, 2]  event centres in pixel space
-
-        Returns:
-            anchor_filter:      [N]      bool — True if event is candidate for ≥1 GT
-            geometry_relation:  [G, N']  bool — per-GT mask over filtered events
-        """
-        center_radius = 1.5
-        center_dist = expanded_strides.unsqueeze(0) * center_radius   # [1, N]
-
-        gt_cx = gt_bboxes_per_image[:, 0:1]                           # [G, 1]
-        gt_cy = gt_bboxes_per_image[:, 1:2]                           # [G, 1]
-
-        ax = anchor_centers[:, 0].unsqueeze(0)                        # [1, N]
-        ay = anchor_centers[:, 1].unsqueeze(0)                        # [1, N]
-
-        c_l = ax - (gt_cx - center_dist)                              # [G, N]
-        c_r = (gt_cx + center_dist) - ax
-        c_t = ay - (gt_cy - center_dist)
-        c_b = (gt_cy + center_dist) - ay
-
-        center_deltas = torch.stack([c_l, c_t, c_r, c_b], dim=2)     # [G, N, 4]
-        is_in_centers = center_deltas.min(dim=-1).values > 0.0       # [G, N]
-
-        anchor_filter = is_in_centers.sum(dim=0) > 0                  # [N]
-        geometry_relation = is_in_centers[:, anchor_filter]            # [G, N']
-
-        return anchor_filter, geometry_relation
-
-    # ------------------------------------------------------------------
-    # SimOTA matching (identical to original YOLOX)
-    # ------------------------------------------------------------------
-
-    def simota_matching(
-        self, cost, pair_wise_ious, gt_classes, num_gt, fg_mask,
-    ):
-        matching_matrix = torch.zeros_like(cost, dtype=torch.uint8)
-
-        n_candidate_k = min(10, pair_wise_ious.size(1))
-        topk_ious, _ = torch.topk(pair_wise_ious, n_candidate_k, dim=1)
-        dynamic_ks = torch.clamp(topk_ious.sum(1).int(), min=1)
-
-        for gt_idx in range(num_gt):
-            _, pos_idx = torch.topk(
-                cost[gt_idx], k=dynamic_ks[gt_idx].item(), largest=False,
-            )
-            matching_matrix[gt_idx][pos_idx] = 1
-
-        del topk_ious, dynamic_ks, pos_idx
-
-        anchor_matching_gt = matching_matrix.sum(0)
-        # One anchor matched to multiple GTs → keep lowest-cost GT
-        if anchor_matching_gt.max() > 1:
-            multiple_match_mask = anchor_matching_gt > 1
-            _, cost_argmin = torch.min(cost[:, multiple_match_mask], dim=0)
-            matching_matrix[:, multiple_match_mask] *= 0
-            matching_matrix[cost_argmin, multiple_match_mask] = 1
-
-        fg_mask_inboxes = anchor_matching_gt > 0
-        num_fg = fg_mask_inboxes.sum().item()
-
-        # Narrow fg_mask from "geometry candidates" to "actually matched"
-        fg_mask[fg_mask.clone()] = fg_mask_inboxes
-
-        matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
-        gt_matched_classes = gt_classes[matched_gt_inds]
-
-        pred_ious_this_matching = (matching_matrix * pair_wise_ious).sum(0)[
-            fg_mask_inboxes
-        ]
-        return num_fg, gt_matched_classes, pred_ious_this_matching, matched_gt_inds
 
     # ------------------------------------------------------------------
     # Post-processing (inference)

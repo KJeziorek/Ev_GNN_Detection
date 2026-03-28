@@ -55,7 +55,7 @@ class NCaltech101Dataset(Dataset):
         self.norm_t = cfg.get("norm_t", 1000)
 
         self.num_events = cfg.get("num_events", 50000)
-        self.sample_len = cfg.get("sample_len", 50000)
+        self.sample_len = cfg.get("sample_len", 100000)
         self.slice_method = SliceMethod(cfg.get("slice_method", "mid_by_time"))
 
         self.generator = GraphGenerator(width=self.width, height=self.height)

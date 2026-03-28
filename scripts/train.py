@@ -127,7 +127,7 @@ class Trainer:
 
             self.optimizer.zero_grad()
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100.0)
             self.optimizer.step()
 
             total_loss_sum += total_loss.item()
@@ -218,24 +218,25 @@ class Trainer:
             print(f"{'='*60}")
 
             train_loss = self.train_one_epoch(epoch)
-            map_50, map_all = self.validate(epoch)
+            if epoch % 10 == 0:
+                map_50, map_all = self.validate(epoch)
 
-            is_best = map_50 > self.best_map
-            if is_best:
-                self.best_map = map_50
-                epochs_no_improve = 0
-            else:
-                epochs_no_improve += 1
+                is_best = map_50 > self.best_map
+                if is_best:
+                    self.best_map = map_50
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
 
-            self.save_checkpoint(epoch, map_50, is_best=is_best)
+                self.save_checkpoint(epoch, map_50, is_best=is_best)
 
-            if (epoch + 1) % self.save_every == 0:
-                path = os.path.join(self.save_dir, f"epoch_{epoch+1}.pth")
-                torch.save(self.model.state_dict(), path)
+                if (epoch + 1) % self.save_every == 0:
+                    path = os.path.join(self.save_dir, f"epoch_{epoch+1}.pth")
+                    torch.save(self.model.state_dict(), path)
 
-            if epochs_no_improve >= self.patience:
-                print(f"Early stopping after {self.patience} epochs without improvement.")
-                break
+                if epochs_no_improve >= self.patience:
+                    print(f"Early stopping after {self.patience} epochs without improvement.")
+                    break
 
         print(f"\nTraining complete. Best mAP@50={self.best_map:.4f}")
 

@@ -7,7 +7,7 @@ from utils.data import GraphData
 
 
 class MinMaxConv(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, bias: bool = False):
+    def __init__(self, in_channels: int, out_channels: int, bias: bool = False, dropout: float = 0.1):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -18,12 +18,14 @@ class MinMaxConv(nn.Module):
         self.msg_mlp = nn.Sequential(
             nn.Linear(in_channels + pos_dim, out_channels),
             nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout),
             # nn.Linear(out_channels, out_channels),
         )
 
         # post-aggregation: max + min + center node
         self.global_nn = nn.Sequential(
-            nn.Linear(out_channels * 2, out_channels),
+            nn.Linear(out_channels * 2, out_channels,),
+            nn.Dropout(p=dropout),
             # nn.ReLU(inplace=True),
             # nn.Linear(out_channels, out_channels, bias=bias),
         )
@@ -41,7 +43,7 @@ class MinMaxConv(nn.Module):
         # pos_enc = torch.cat([rel_pos, dist, rel_pos_norm, dt], dim=1)
 
         # --- messages ---
-        msg = torch.cat([x[dst], rel_pos], dim=1)
+        msg = torch.cat([x[dst], rel_pos/5], dim=1)
         msg = self.msg_mlp(msg)
 
         # --- dual aggregation ---
