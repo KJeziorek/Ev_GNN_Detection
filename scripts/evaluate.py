@@ -73,13 +73,12 @@ def plot_graph_3d(data: GraphData, title: str, ax, max_edges: int = 8000):
 
 cfg_path = Path(__file__).resolve().parent.parent / "configs" / "ncaltech101.yaml"
 with open(cfg_path) as f:
-    raw_cfg = yaml.safe_load(f)
+    cfg = yaml.safe_load(f)
 
-cfg = {**raw_cfg["data"], **raw_cfg["graph"]}
-cfg["batch_size"] = 1
-cfg["num_workers"] = 0
+cfg["training"]["batch_size"] = 1
+cfg["training"]["num_workers"] = 0
 
-device = raw_cfg.get("device", "cuda")
+device = cfg.get("device", "cuda")
 
 # ── dataset ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +90,7 @@ batch = next(iter(test_loader)).to(device)
 
 # ── run backbone stage-by-stage ──────────────────────────────────────────────
 
-backbone = BACKBONE().to(device)
+backbone = BACKBONE(cfg).to(device)
 
 # load pretrained weights from Detection checkpoint
 ckpt_path = Path(__file__).resolve().parent.parent / "checkpoints" / "ncaltech101" / "best.pth"

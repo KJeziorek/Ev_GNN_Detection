@@ -39,28 +39,35 @@ class NCaltech101Dataset(Dataset):
         Args:
             samples: list of (event_path, annotation_path, class_idx) tuples
             class_to_idx: dict mapping class name -> int index
-            cfg: config dict
+            cfg: full nested config dict
             augment: whether to apply data augmentation
         """
         self.samples = samples
         self.class_to_idx = class_to_idx
-        self.cfg = cfg
         self.augment = augment
 
-        self.width = cfg.get("sensor_width", 240)
-        self.height = cfg.get("sensor_height", 180)
+        data_cfg  = cfg.get("data",  {})
+        norm_cfg  = cfg.get("norm",  {})
+        graph_cfg = cfg.get("graph", {})
+        aug_cfg   = cfg.get("augmentation", {})
 
-        self.norm_w = cfg.get("norm_w", 240)
-        self.norm_h = cfg.get("norm_h", 180)
-        self.norm_t = cfg.get("norm_t", 1000)
+        self.width  = data_cfg.get("sensor_width",  240)
+        self.height = data_cfg.get("sensor_height", 180)
 
-        self.num_events = cfg.get("num_events", 50000)
-        self.sample_len = cfg.get("sample_len", 100000)
-        self.slice_method = SliceMethod(cfg.get("slice_method", "mid_by_time"))
+        self.norm_w = norm_cfg.get("norm_w", 240)
+        self.norm_h = norm_cfg.get("norm_h", 180)
+        self.norm_t = norm_cfg.get("norm_t", 1000)
+
+        self.num_events   = data_cfg.get("num_events",   50000)
+        self.sample_len   = data_cfg.get("sample_len",   100000)
+        self.slice_method = SliceMethod(data_cfg.get("slice_method", "mid_by_time"))
+
+        self.radius_x = graph_cfg.get("radius_x", 5)
+        self.radius_y = graph_cfg.get("radius_y", 5)
+        self.radius_t = graph_cfg.get("radius_t", 5)
 
         self.generator = GraphGenerator(width=self.width, height=self.height)
 
-        aug_cfg = cfg.get("augmentation", {})
         if augment:
             self.transform = Compose([
                 RandomHFlip(p=aug_cfg.get("hflip_p", 0.5), width=self.width),
@@ -102,9 +109,9 @@ class NCaltech101Dataset(Dataset):
         # Generate graph
         x, pos, edge_index = self.generator.generate_edges(
             events,
-            radius_x=self.cfg.get("radius_x", 5),
-            radius_y=self.cfg.get("radius_y", 5),
-            radius_t=self.cfg.get("radius_t", 5),
+            radius_x=self.radius_x,
+            radius_y=self.radius_y,
+            radius_t=self.radius_t,
         )
 
         self.generator.clear()
@@ -168,15 +175,19 @@ class NCaltech101(L.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.data_dir = Path(cfg["data_dir"])
-        self.width = cfg.get("sensor_width", 240)
-        self.height = cfg.get("sensor_height", 180)
 
-        self.train_ratio = cfg.get("train_ratio", 0.7)
-        self.val_ratio = cfg.get("val_ratio", 0.15)
+        data_cfg  = cfg.get("data",     {})
+        train_cfg = cfg.get("training", {})
 
-        self.batch_size = cfg.get("batch_size", 8)
-        self.num_workers = cfg.get('num_workers', 4)
+        self.data_dir    = Path(data_cfg["data_dir"])
+        self.width       = data_cfg.get("sensor_width",  240)
+        self.height      = data_cfg.get("sensor_height", 180)
+        self.train_ratio = data_cfg.get("train_ratio",   0.7)
+        self.val_ratio   = data_cfg.get("val_ratio",     0.15)
+        self._seed       = data_cfg.get("seed",          42)
+
+        self.batch_size  = train_cfg.get("batch_size",  8)
+        self.num_workers = train_cfg.get("num_workers", 4)
 
     @staticmethod
     def load_events(raw_file: str):
@@ -239,7 +250,7 @@ class NCaltech101(L.LightningDataModule):
         samples, class_to_idx = self._build_sample_list()
 
         # Deterministic shuffle for reproducible splits
-        rng = np.random.RandomState(seed=self.cfg.get("seed", 42))
+        rng = np.random.RandomState(seed=self._seed)
         rng.shuffle(samples)
 
         n = len(samples)

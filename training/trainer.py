@@ -1,8 +1,6 @@
 import torch
 import lightning as L
 import wandb
-import torch.nn as nn
-
 from functools import partial
 from typing import Any
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
@@ -48,17 +46,11 @@ class LNDetection(L.LightningModule):
     def get_optimizer(self, batch_size: int) -> torch.optim.Optimizer:
         # When using warmup, set initial lr=1 so LambdaLR acts as an absolute setter
         lr = 1 if self.warmup_epochs > 0 else self.basic_lr_per_img * batch_size
-        pg0, pg1, pg2 = [], [], []
-        for k, v in self.model.named_modules():
-            if hasattr(v, "bias") and isinstance(v.bias, nn.Parameter):
-                pg2.append(v.bias)
-            if isinstance(v, nn.BatchNorm1d) or "bn" in k:
-                pg0.append(v.weight)  # no weight decay
-            elif hasattr(v, "weight") and isinstance(v.weight, nn.Parameter):
-                pg1.append(v.weight)  # with weight decay
-        optimizer = torch.optim.SGD(pg0, lr=lr, momentum=self.momentum, nesterov=True)
-        optimizer.add_param_group({"params": pg1, "weight_decay": self.weight_decay})
-        optimizer.add_param_group({"params": pg2})
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=lr,
+            weight_decay=self.weight_decay,
+        )
         return optimizer
 
     def get_lr_scheduler(self, lr: float, iters_per_epoch: int) -> LRScheduler:

@@ -382,13 +382,10 @@ if __name__ == "__main__":
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    ds_cfg = {**cfg.get("data", {}), **cfg.get("norm", {}),
-              **cfg.get("augmentation", {}), **cfg.get("graph", {})}
-
     device = cfg.get("device", "cuda")
 
     # Dataset
-    datamodule = NCaltech101(ds_cfg)
+    datamodule = NCaltech101(cfg)
     datamodule.setup()
     print(f"Classes: {datamodule.num_classes}")
 
@@ -396,7 +393,7 @@ if __name__ == "__main__":
     print(f"Using {args.split} split, {len(loader)} batches")
 
     # Model
-    model = DetectionModel()
+    model = DetectionModel(cfg)
 
     if args.checkpoint and os.path.exists(args.checkpoint):
         state = torch.load(args.checkpoint, map_location=device, weights_only=False)

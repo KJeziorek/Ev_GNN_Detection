@@ -250,12 +250,8 @@ if __name__ == "__main__":
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    # Flatten nested config for dataset (it expects a flat dict)
-    ds_cfg = {**cfg.get("data", {}), **cfg.get("norm", {}),
-              **cfg.get("augmentation", {}), **cfg.get("graph", {})}
-
     # Build datamodule and setup splits
-    datamodule = NCaltech101(ds_cfg)
+    datamodule = NCaltech101(cfg)
     datamodule.setup()
 
     print(f"Classes: {datamodule.num_classes}")

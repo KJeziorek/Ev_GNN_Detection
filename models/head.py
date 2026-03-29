@@ -138,13 +138,13 @@ class YOLOXHead(nn.Module):
         in_channels      = head_cfg.get("in_channels", [256])
 
         # ---- sparse training config (defaults = original baseline) ----
-        cfg = sparse_cfg or {}
-        self.max_fg_per_gt = cfg.get("max_fg_per_gt", None)             # None = unlimited
-        self.fg_selection = cfg.get("fg_selection", "recent")           # recent | random | iou
-        self.use_ignore_zone = cfg.get("use_ignore_zone", False)
-        self.use_temporal_weighting = cfg.get("use_temporal_weighting", False)
-        self.temporal_min_weight = cfg.get("temporal_min_weight", 0.1)  # weight for oldest event
-        self.use_cell_aggregation = cfg.get("use_cell_aggregation", True)
+        sp_cfg = sparse_cfg or {}
+        self.max_fg_per_gt = sp_cfg.get("max_fg_per_gt", None)             # None = unlimited
+        self.fg_selection = sp_cfg.get("fg_selection", "recent")           # recent | random | iou
+        self.use_ignore_zone = sp_cfg.get("use_ignore_zone", False)
+        self.use_temporal_weighting = sp_cfg.get("use_temporal_weighting", False)
+        self.temporal_min_weight = sp_cfg.get("temporal_min_weight", 0.1)  # weight for oldest event
+        self.use_cell_aggregation = sp_cfg.get("use_cell_aggregation", True)
 
         if self.use_cell_aggregation and self.max_fg_per_gt is not None:
             logger.warning(

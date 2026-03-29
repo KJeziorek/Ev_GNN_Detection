@@ -23,20 +23,6 @@ from datasets.ncaltech101 import NCaltech101
 from training.trainer import LNDetection
 
 
-def build_ds_cfg(cfg: dict) -> dict:
-    """Flatten nested config sections into the flat dict the dataset expects."""
-    train_cfg = cfg.get("training", {})
-    return {
-        **cfg.get("data", {}),
-        **cfg.get("norm", {}),
-        **cfg.get("graph", {}),
-        # Keep augmentation as a sub-dict so NCaltech101Dataset can read it
-        "augmentation": cfg.get("augmentation", {}),
-        "batch_size":   train_cfg.get("batch_size", 8),
-        "num_workers":  train_cfg.get("num_workers", 4),
-    }
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config",   type=str,  default="configs/ncaltech101.yaml")
@@ -57,8 +43,7 @@ if __name__ == "__main__":
     log_cfg   = cfg.get("logging",  {})
 
     # ---- Datamodule ----
-    ds_cfg = build_ds_cfg(cfg)
-    datamodule = NCaltech101(ds_cfg)
+    datamodule = NCaltech101(cfg)
     datamodule.setup()
 
     print(f"Classes : {datamodule.num_classes}")
