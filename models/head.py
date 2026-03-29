@@ -95,6 +95,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
+from models.utils import IOUloss
 from models.layers.linear import LinearX
 from models.layers.pointnet import PointNetConv
 from models.layers.norm import BatchNorm
@@ -102,79 +103,6 @@ from models.layers.network_blocks import BaseConv
 from utils.focal_loss import FocalLoss
 
 logger = logging.getLogger(__name__)
-
-# ======================================================================
-# Standalone IoU utilities (unchanged)
-# ======================================================================
-
-def bboxes_iou(bboxes_a, bboxes_b, xyxy=False):
-    """
-    Pairwise IoU between two sets of boxes.
-
-    Args:
-        bboxes_a: [N, 4]
-        bboxes_b: [M, 4]
-        xyxy:     if False, inputs are (cx, cy, w, h); if True, (x1, y1, x2, y2)
-
-    Returns:
-        [N, M] IoU matrix
-    """
-    if not xyxy:
-        a_x1y1 = bboxes_a[:, :2] - bboxes_a[:, 2:4] / 2
-        a_x2y2 = bboxes_a[:, :2] + bboxes_a[:, 2:4] / 2
-        b_x1y1 = bboxes_b[:, :2] - bboxes_b[:, 2:4] / 2
-        b_x2y2 = bboxes_b[:, :2] + bboxes_b[:, 2:4] / 2
-    else:
-        a_x1y1, a_x2y2 = bboxes_a[:, :2], bboxes_a[:, 2:4]
-        b_x1y1, b_x2y2 = bboxes_b[:, :2], bboxes_b[:, 2:4]
-
-    tl = torch.max(a_x1y1[:, None, :], b_x1y1[None, :, :])  # [N, M, 2]
-    br = torch.min(a_x2y2[:, None, :], b_x2y2[None, :, :])  # [N, M, 2]
-    inter = (br - tl).clamp(min=0).prod(dim=2)                # [N, M]
-
-    area_a = (a_x2y2[:, 0] - a_x1y1[:, 0]) * (a_x2y2[:, 1] - a_x1y1[:, 1])  # [N]
-    area_b = (b_x2y2[:, 0] - b_x1y1[:, 0]) * (b_x2y2[:, 1] - b_x1y1[:, 1])  # [M]
-    return inter / (area_a[:, None] + area_b[None, :] - inter + 1e-16)
-
-
-class IOUloss(nn.Module):
-    """IoU / GIoU loss on (cx, cy, w, h) boxes."""
-
-    def __init__(self, reduction="none", loss_type="iou"):
-        super().__init__()
-        self.reduction = reduction
-        self.loss_type = loss_type
-
-    def forward(self, pred, target):
-        # Convert cxcywh → xyxy
-        p_x1y1 = pred[:, :2] - pred[:, 2:4] / 2
-        p_x2y2 = pred[:, :2] + pred[:, 2:4] / 2
-        t_x1y1 = target[:, :2] - target[:, 2:4] / 2
-        t_x2y2 = target[:, :2] + target[:, 2:4] / 2
-
-        tl = torch.max(p_x1y1, t_x1y1)
-        br = torch.min(p_x2y2, t_x2y2)
-        inter = (br - tl).clamp(min=0).prod(dim=1)
-
-        area_p = (p_x2y2[:, 0] - p_x1y1[:, 0]) * (p_x2y2[:, 1] - p_x1y1[:, 1])
-        area_t = (t_x2y2[:, 0] - t_x1y1[:, 0]) * (t_x2y2[:, 1] - t_x1y1[:, 1])
-        union = area_p + area_t - inter + 1e-16
-        iou = inter / union
-
-        if self.loss_type == "giou":
-            enc_tl = torch.min(p_x1y1, t_x1y1)
-            enc_br = torch.max(p_x2y2, t_x2y2)
-            enc_area = (enc_br - enc_tl).clamp(min=0).prod(dim=1)
-            loss = 1.0 - (iou - (enc_area - union) / (enc_area + 1e-16))
-        else:
-            loss = 1.0 - iou
-
-        if self.reduction == "mean":
-            return loss.mean()
-        if self.reduction == "sum":
-            return loss.sum()
-        return loss
-
 
 # ======================================================================
 # Point-based YOLOX Head  (with configurable sparse-event strategies)
@@ -198,16 +126,16 @@ class YOLOXHead(nn.Module):
     (as produced by convert_to_training_format).
     """
 
-    def __init__(
-        self,
-        num_classes,
-        strides=[3, 6, 12],
-        in_channels=[64, 128, 256],
-        sparse_cfg=None,
-    ):
+    def __init__(self, cfg):
         super().__init__()
-        self.num_classes = num_classes
-        self.strides = strides
+
+        model_cfg  = cfg.get("model", {})
+        head_cfg   = cfg.get("head", {})
+        sparse_cfg = head_cfg.get("sparse_cfg", {})
+
+        self.num_classes = model_cfg["num_classes"]
+        self.strides     = head_cfg.get("strides",     [20])
+        in_channels      = head_cfg.get("in_channels", [256])
 
         # ---- sparse training config (defaults = original baseline) ----
         cfg = sparse_cfg or {}
@@ -410,8 +338,9 @@ class YOLOXHead(nn.Module):
         s = strides
         decoded[:, 0] = (positions[:, 0] + outputs[:, 0]) * s
         decoded[:, 1] = (positions[:, 1] + outputs[:, 1]) * s
-        decoded[:, 2] = torch.exp(outputs[:, 2].clamp(max=10.0)) * s
-        decoded[:, 3] = torch.exp(outputs[:, 3].clamp(max=10.0)) * s
+        # clamp at 7.0: exp(7)*stride_max(20) = 21920, safely within fp16 range (65504)
+        decoded[:, 2] = torch.exp(outputs[:, 2].clamp(max=7.0)) * s
+        decoded[:, 3] = torch.exp(outputs[:, 3].clamp(max=7.0)) * s
         return decoded
 
     # ------------------------------------------------------------------

@@ -6,17 +6,16 @@ import torchvision
 
 from models.backbone import BACKBONE
 from models.head import YOLOXHead
-from models.yolox.utils.compat import meshgrid
 
 logger = logging.getLogger(__name__)
 
 
 class Detection(nn.Module):
-    def __init__(self):
+    def __init__(self, cfg):
         super().__init__()
 
-        self.backbone = BACKBONE()
-        self.head = YOLOXHead(num_classes=100, strides=[20], in_channels=[256])
+        self.backbone = BACKBONE(cfg)
+        self.head = YOLOXHead(cfg)
 
     def forward(self, data):
         fpn_outs = self.backbone(data)

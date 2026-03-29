@@ -11,6 +11,7 @@ class GraphData:
     bboxes: torch.Tensor | None = None
     batch_bb: torch.Tensor | None = None
     target: torch.Tensor | None = None
+    frame: object = None  # numpy [H, W, 3] uint8 per sample, or list thereof in batched form
 
     def clone(self):
         return GraphData(

@@ -33,17 +33,61 @@ model:
   num_classes: 100
   spatial_range: [240, 180]
 
+backbone:
+  # channels[i] = output channels of block i (block0 input is always 1)
+  channels: [16, 64, 128, 256, 256]
+  # pool_sizes[i] = [stride_x, stride_y, stride_t] applied before block i+1
+  pool_sizes:
+    - [5.0, 5.0, 10.0]   # pool1: 240→48, 180→36
+    - [2.0, 2.0, 1.0]    # pool2: 48→24,  36→18
+    - [2.0, 2.0, 1.0]    # pool3: 24→12,  18→9
+    - [1.0, 1.0, 1.0]    # pool4: identity (no spatial reduction)
+
+head:
+  # Number of detection scales = len(strides) = len(in_channels).
+  # The backbone returns the last N feature maps (tail of backbone.pool_sizes stages).
+  # in_channels must match backbone.channels[-N:] exactly.
+  #
+  # Single-scale (current):
+  #   strides: [20]          in_channels: [256]   → backbone.channels[-1:]
+  #
+  # Two-scale example:
+  #   strides: [10, 20]      in_channels: [256, 256]  → backbone.channels[-2:]
+  #
+  # Three-scale example:
+  #   strides: [5, 10, 20]   in_channels: [128, 256, 256]  → backbone.channels[-3:]
+  strides: [20]
+  in_channels: [256]
+  sparse_cfg:
+    max_fg_per_gt: null        # null = unlimited
+    fg_selection: recent       # recent | random | iou
+    use_ignore_zone: false
+    use_temporal_weighting: false
+    temporal_min_weight: 0.1
+    use_cell_aggregation: false
+
 training:
   batch_size: 8
   num_workers: 4
-  epochs: 200
-  learning_rate: 0.001
+  epochs: 801
+  learning_rate: 0.01
   weight_decay: 0.00005
+  momentum: 0.9
+  scheduler: yoloxwarmcos
+  warmup_epochs: 100
+  warmup_lr: 0
+  min_lr_ratio: 0.05
+  no_aug_epochs: 15
   patience: 20
+  precision: "16-mixed"
+  gradient_clip_val: 1.0
+  val_every_n_epoch: 10
+  log_every_n_steps: 10
 
 logging:
   log_dir: logs/ncaltech101
   checkpoint_dir: checkpoints/ncaltech101
+  wandb_project: ev-gnn-detection
   save_every: 10
 
 device: cuda

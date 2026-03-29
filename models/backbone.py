@@ -8,22 +8,32 @@ from models.layers.linear import LinearX
 from utils.data import GraphData
 
 class BACKBONE(nn.Module):
-    def __init__(self):
+    def __init__(self, cfg):
         super().__init__()
 
-        self.block1 = BlockConv(1, 16)
+        backbone_cfg = cfg.get("backbone", {})
+        channels   = backbone_cfg.get("channels",   [16, 64, 128, 256, 256])
+        pool_sizes = backbone_cfg.get("pool_sizes",  [
+            [5.0, 5.0, 10.0],
+            [2.0, 2.0,  1.0],
+            [2.0, 2.0,  1.0],
+            [1.0, 1.0,  1.0],
+        ])
 
-        self.pool1 = GraphPooling((240/48, 180/36, 10))
-        self.block2 = BlockConv(16, 64)
+        # First block takes 1-channel input (polarity)
+        in_ch = 1
+        self.blocks = nn.ModuleList()
+        self.pools  = nn.ModuleList()
 
-        self.pool2 = GraphPooling((48/24, 36/18, 1))
-        self.block3 = BlockConv(64, 128)
+        # Build: block0, (pool0, block1), (pool1, block2), ...
+        self.blocks.append(BlockConv(in_ch, channels[0]))
+        for i, (pool_size, out_ch) in enumerate(zip(pool_sizes, channels[1:])):
+            self.pools.append(GraphPooling(tuple(pool_size)))
+            self.blocks.append(BlockConv(channels[i], out_ch))
 
-        self.pool3 = GraphPooling((24/12, 18/9, 1))
-        self.block4 = BlockConv(128, 256)
-
-        self.pool4 = GraphPooling((12/12, 9/9, 1))
-        self.block5 = BlockConv(256, 256)
+        # How many tail-end feature maps to return to the head.
+        # Must equal len(head.in_channels) which must match backbone.channels[-num_outputs:].
+        self.num_outputs = len(cfg.get("head", {}).get("in_channels", [channels[-1]]))
 
         self.initialize_weights()
 
@@ -38,39 +48,10 @@ class BACKBONE(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, data: GraphData):
-        """
-        Multi-scale forward pass.
-
-        Args:
-            x:          [N, 1]     input features (e.g. polarity)
-            pos:        [N, 3+]    positions, last column = timestamp
-            edge_index: [E, 2]     input edges (src, dst)
-
-        Returns:
-            List of (x, pos, edge_index) triples at 3 scales:
-              scale 0 — after pool1  (80×60 grid, 16 ch → 32 ch)
-              scale 1 — after pool2  (40×30 grid, 32 ch → 64 ch)
-              scale 2 — after pool3  (20×15 grid, 64 ch → 64 ch)
-        """
-        # --- Scale 0: full res → 80×60 ---
-        data = self.block1(data)
-
-        data = self.pool1(data)
-        data = self.block2(data)
-
-        # --- Scale 1: 80×60 → 40×30 ---
-        data = self.pool2(data)
-        data = self.block3(data)
-
-        # --- Scale 2: 40×30 → 20×15 ---
-        data = self.pool3(data)
-        data = self.block4(data)
-
-        # feat_s1 = data.clone()
-
-        data = self.pool4(data)
-        data = self.block5(data)
-
-        feat_s2 = data.clone()
-
-        return [feat_s2]
+        data = self.blocks[0](data)
+        features = []
+        for pool, block in zip(self.pools, self.blocks[1:]):
+            data = pool(data)
+            data = block(data)
+            features.append(data.clone())
+        return features[-self.num_outputs:]

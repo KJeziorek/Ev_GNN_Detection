@@ -97,6 +97,8 @@ class NCaltech101Dataset(Dataset):
 
         events = self.normalize_events(events)
 
+        frame = self._make_event_frame(events)
+
         # Generate graph
         x, pos, edge_index = self.generator.generate_edges(
             events,
@@ -106,8 +108,21 @@ class NCaltech101Dataset(Dataset):
         )
 
         self.generator.clear()
-        return GraphData(x=x, pos=pos, edge_index=edge_index, bboxes=bbox)
+        return GraphData(x=x, pos=pos, edge_index=edge_index, bboxes=bbox, frame=frame)
     
+    def _make_event_frame(self, events) -> np.ndarray:
+        """Render normalized events into an RGB image [H, W, 3] uint8."""
+        h, w = int(self.norm_h), int(self.norm_w)
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        xs = events[:, 0].numpy().astype(int).clip(0, w - 1)
+        ys = events[:, 1].numpy().astype(int).clip(0, h - 1)
+        ps = events[:, 3].numpy()
+        neg = ps < 0
+        frame[ys[neg], xs[neg]] = [128, 128, 128]   # negative events: gray
+        pos = ps > 0
+        frame[ys[pos], xs[pos]] = [255, 255, 255]   # positive events: white
+        return frame
+
     def slice_events(self, events):
         if self.slice_method == SliceMethod.FIRST_BY_TIME:
             min_time = events[:, 2].min()
@@ -272,13 +287,16 @@ class NCaltech101(L.LightningDataModule):
 
         target = convert_to_training_format(bboxes, batch_bb, batch.max().item()+1)
 
-        return GraphData(x=x, 
+        frames = [d.frame for d in data_list]
+
+        return GraphData(x=x,
                          pos=pos,
                          edge_index=edge_index,
                          batch=batch,
                          bboxes=bboxes,
                          batch_bb=batch_bb,
-                         target=target)
+                         target=target,
+                         frame=frames)
 
     def train_dataloader(self):
         return DataLoader(self.train_data,
