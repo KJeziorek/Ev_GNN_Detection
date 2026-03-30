@@ -245,7 +245,7 @@ class NCaltech101(L.LightningDataModule):
         val_samples,   _            = self._build_sample_list("validation")
         test_samples,  _            = self._build_sample_list("testing")
 
-        self.train_data = NCaltech101Dataset(train_samples, class_to_idx, self.cfg, augment=False)
+        self.train_data = NCaltech101Dataset(train_samples, class_to_idx, self.cfg, augment=True)
         self.val_data   = NCaltech101Dataset(val_samples,   class_to_idx, self.cfg)
         self.test_data  = NCaltech101Dataset(test_samples,  class_to_idx, self.cfg)
 
