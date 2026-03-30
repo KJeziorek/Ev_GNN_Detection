@@ -1,4 +1,6 @@
 import os
+import hdf5plugin
+import h5py
 import numpy as np
 import torch
 import lightning as L
@@ -13,7 +15,6 @@ from datasets.graph_gen.matrix_neighbour import GraphGenerator
 from datasets.augmentations.augmentation import (
     Compose, RandomHFlip, RandomCrop, RandomZoom, RandomTranslate, Crop
 )
-
 
 class SliceMethod(Enum):
     FIRST_BY_TIME = "first_by_time"
@@ -62,8 +63,8 @@ class NCaltech101Dataset(Dataset):
         self.sample_len   = data_cfg.get("sample_len",   100000)
         self.slice_method = SliceMethod(data_cfg.get("slice_method", "mid_by_time"))
 
-        self.radius_x = graph_cfg.get("radius_x", 5)
-        self.radius_y = graph_cfg.get("radius_y", 5)
+        self.radius_x = graph_cfg.get("radius_x", 3)
+        self.radius_y = graph_cfg.get("radius_y", 3)
         self.radius_t = graph_cfg.get("radius_t", 5)
 
         self.generator = GraphGenerator(width=self.width, height=self.height)
@@ -92,15 +93,18 @@ class NCaltech101Dataset(Dataset):
     def __getitem__(self, idx):
         ev_path, ann_path, class_idx = self.samples[idx]
 
-        events = NCaltech101.load_events(ev_path)
+        events = NCaltech101.load_events(ev_path, self.num_events)
         bbox = NCaltech101.load_annotations(ann_path)
 
         # Limit number of events
-        events = self.slice_events(events)
+        # events = self.slice_events(events)
 
         # Augment in pixel space before normalization
         bbox = torch.tensor(np.append(bbox, class_idx), dtype=torch.float32).unsqueeze(0)
         events, bbox = self.transform(events, bbox)
+
+        if events.shape[0] == 0:
+            return self.__getitem__((idx + 1) % len(self))
 
         events = self.normalize_events(events)
 
@@ -182,29 +186,21 @@ class NCaltech101(L.LightningDataModule):
         self.data_dir    = Path(data_cfg["data_dir"])
         self.width       = data_cfg.get("sensor_width",  240)
         self.height      = data_cfg.get("sensor_height", 180)
-        self.train_ratio = data_cfg.get("train_ratio",   0.7)
-        self.val_ratio   = data_cfg.get("val_ratio",     0.15)
-        self._seed       = data_cfg.get("seed",          42)
 
         self.batch_size  = train_cfg.get("batch_size",  8)
         self.num_workers = train_cfg.get("num_workers", 4)
 
     @staticmethod
-    def load_events(raw_file: str):
-        f = open(raw_file, 'rb')
-        raw_data = np.fromfile(f, dtype=np.uint8)
-        f.close()
-
-        raw_data = np.uint32(raw_data)
-        all_y = raw_data[1::5]
-        all_x = raw_data[0::5]
-        all_p = (raw_data[2::5] & 128) >> 7  # bit 7
-        all_ts = ((raw_data[2::5] & 127) << 16) | (raw_data[3::5] << 8) | (raw_data[4::5])
-        all_p = all_p.astype(np.float64)
-        all_p[all_p == 0] = -1
-        events = np.column_stack((all_x, all_y, all_ts, all_p))
-        events = torch.from_numpy(events).float()
-        return events
+    def load_events(f_path: str, num_events: int):
+        with h5py.File(str(f_path)) as fh:
+            ev = fh['events']
+            x = ev["x"][-num_events:]
+            y = ev["y"][-num_events:]
+            t = ev["t"][-num_events:]
+            p = ev["p"][-num_events:]
+        events = np.column_stack((x, y, t, p)).astype(np.float64)
+        events[events[:, 3] == 0, 3] = -1
+        return torch.from_numpy(events).float()
 
     @staticmethod
     def load_annotations(ann_file: str):
@@ -222,50 +218,38 @@ class NCaltech101(L.LightningDataModule):
         bbox[:2] = np.maximum(bbox[:2], 0)
         return bbox
 
-    def _build_sample_list(self):
-        """Scan data_dir and build list of (event_path, ann_path, class_idx) tuples."""
-        events_dir = self.data_dir / "Caltech101"
-        anns_dir = self.data_dir / "Caltech101_annotations"
+    def _build_sample_list(self, split: str):
+        """Scan data_dir/{split} and build list of (event_path, ann_path, class_idx) tuples."""
+        events_dir = self.data_dir / split
+        anns_dir   = self.data_dir / "annotations"
 
         class_names = sorted([
-            d.name for d in events_dir.iterdir()
-            if d.is_dir() and d.name != "BACKGROUND_Google"
+            d.name for d in events_dir.iterdir() if d.is_dir()
         ])
         class_to_idx = {name: i for i, name in enumerate(class_names)}
 
         samples = []
         for cls_name in class_names:
-            cls_ev_dir = events_dir / cls_name
-            cls_ann_dir = anns_dir / cls_name
+            cls_ev_dir  = events_dir / cls_name
+            cls_ann_dir = anns_dir   / cls_name
 
-            for ev_file in sorted(cls_ev_dir.glob("*.bin")):
-                # image_0001.bin -> annotation_0001.bin
-                ann_file = cls_ann_dir / ev_file.name.replace("image_", "annotation_")
+            for ev_file in sorted(cls_ev_dir.glob("*.h5")):
+                ann_file = cls_ann_dir / (ev_file.stem.replace("image_", "annotation_") + ".bin")
                 if ann_file.exists():
                     samples.append((str(ev_file), str(ann_file), class_to_idx[cls_name]))
 
         return samples, class_to_idx
 
     def setup(self, stage=None):
-        samples, class_to_idx = self._build_sample_list()
+        train_samples, class_to_idx = self._build_sample_list("training")
+        val_samples,   _            = self._build_sample_list("validation")
+        test_samples,  _            = self._build_sample_list("testing")
 
-        # Deterministic shuffle for reproducible splits
-        rng = np.random.RandomState(seed=self._seed)
-        rng.shuffle(samples)
+        self.train_data = NCaltech101Dataset(train_samples, class_to_idx, self.cfg, augment=False)
+        self.val_data   = NCaltech101Dataset(val_samples,   class_to_idx, self.cfg)
+        self.test_data  = NCaltech101Dataset(test_samples,  class_to_idx, self.cfg)
 
-        n = len(samples)
-        n_train = int(n * self.train_ratio)
-        n_val = int(n * self.val_ratio)
-
-        train_samples = samples[:n_train]
-        val_samples = samples[n_train:n_train + n_val]
-        test_samples = samples[n_train + n_val:]
-
-        self.train_data = NCaltech101Dataset(train_samples, class_to_idx, self.cfg, augment=True)
-        self.val_data = NCaltech101Dataset(val_samples, class_to_idx, self.cfg)
-        self.test_data = NCaltech101Dataset(test_samples, class_to_idx, self.cfg)
-
-        self.num_classes = len(class_to_idx)
+        self.num_classes  = len(class_to_idx)
         self.class_to_idx = class_to_idx
 
     def collate_fn(self, data_list):
@@ -332,9 +316,8 @@ class NCaltech101(L.LightningDataModule):
 
 
 if __name__ == "__main__":
-    raw_file = "/home/imperator/Datasets/NCaltech101/Caltech101/accordion/image_0001.bin"
-    ann_file = "/home/imperator/Datasets/NCaltech101/Caltech101_annotations/accordion/annotation_0001.bin"
+    ev_file  = "/home/imperator/Datasets/ncaltech101/training/accordion/image_0001.h5"
+    ann_file = "/home/imperator/Datasets/ncaltech101/annotations/accordion/image_0001.bin"
 
-    ds = NCaltech101(cfg={"data_dir": "/home/imperator/Datasets/NCaltech101"})
-    print(ds.load_events(raw_file))
-    print(ds.load_annotations(ann_file))
+    print(NCaltech101.load_events(ev_file, num_events=50000))
+    print(NCaltech101.load_annotations(ann_file))

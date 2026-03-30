@@ -1,15 +1,12 @@
 # NCaltech101 dataset & training configuration
 
 data:
-  data_dir: /home/imperator/Datasets/NCaltech101
+  data_dir: /home/imperator/Datasets/ncaltech101
   sensor_width: 240
   sensor_height: 180
   num_events: 50000
-  sample_len: 100000
-  slice_method: mid_by_time  # first_by_time, last_by_time, first_by_count, last_by_count
-  train_ratio: 0.7
-  val_ratio: 0.15
-  seed: 42
+  sample_len: 99999
+  slice_method: last_by_count  # first_by_time, last_by_time, first_by_count, last_by_count
 
 norm:
   norm_w: 240
@@ -35,12 +32,12 @@ model:
 
 backbone:
   # channels[i] = output channels of block i (block0 input is always 1)
-  channels: [16, 64, 128, 256, 256]
+  channels: [16, 32, 64, 128, 256]
   # pool_sizes[i] = [stride_x, stride_y, stride_t] applied before block i+1
   pool_sizes:
     - [5.0, 5.0, 10.0]   # pool1: 240→48, 180→36
-    - [2.0, 2.0, 1.0]    # pool2: 48→24,  36→18
-    - [2.0, 2.0, 1.0]    # pool3: 24→12,  18→9
+    - [2.0, 2.0, 10.0]    # pool2: 48→24,  36→18
+    - [2.0, 2.0, 10.0]    # pool3: 24→12,  18→9
     - [1.0, 1.0, 1.0]    # pool4: identity (no spatial reduction)
 
 head:
@@ -56,8 +53,8 @@ head:
   #
   # Three-scale example:
   #   strides: [5, 10, 20]   in_channels: [128, 256, 256]  → backbone.channels[-3:]
-  strides: [20]
-  in_channels: [256]
+  strides: [10, 20]
+  in_channels: [128, 256]
   sparse_cfg:
     max_fg_per_gt: null        # null = unlimited
     fg_selection: recent       # recent | random | iou

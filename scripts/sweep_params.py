@@ -180,15 +180,16 @@ def collect_raw_predictions(model, dataloader, device, num_batches=None):
         all_strides_list = []
         all_batches = []
 
-        for k, (cls_conv, reg_conv, stride_k, feat_data) in enumerate(
-            zip(head_mod.cls_convs, head_mod.reg_convs, head_mod.strides, fpn_outs)
+        for k, (cls_conv, reg_conv, obj_conv, stride_k, feat_data) in enumerate(
+            zip(head_mod.cls_convs, head_mod.reg_convs, head_mod.obj_convs, head_mod.strides, fpn_outs)
         ):
             feat_data = head_mod.stems[k](feat_data)
             cls_data = feat_data.clone()
+            obj_data = feat_data.clone()
 
             cls_feat = cls_conv(cls_data)
             reg_feat = reg_conv(feat_data)
-            obj_feat = reg_feat.clone()
+            obj_feat = obj_conv(obj_data)
 
             cls_output = head_mod.cls_preds[k](cls_feat).x
             reg_output = head_mod.reg_preds[k](reg_feat).x
@@ -373,7 +374,7 @@ def run_sweep(all_raw, all_targets):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/ncaltech101.yaml")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/ncaltech101/best.pth")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/ncaltech101/best-v1.ckpt")
     parser.add_argument("--num_batches", type=int, default=None,
                         help="Limit batches (None = full val set)")
     parser.add_argument("--split", choices=["val", "test"], default="test")

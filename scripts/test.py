@@ -201,12 +201,22 @@ class Trainer:
 
     def load_checkpoint(self, path):
         state = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(state["model"])
-        self.optimizer.load_state_dict(state["optimizer"])
-        if "scheduler" in state:
-            self.scheduler.load_state_dict(state["scheduler"])
-        print(f"Loaded checkpoint from {path} (epoch {state['epoch']+1})")
-        return state["epoch"]
+        if "model" in state:
+            self.model.load_state_dict(state["model"])
+            if "optimizer" in state:
+                self.optimizer.load_state_dict(state["optimizer"])
+            if "scheduler" in state:
+                self.scheduler.load_state_dict(state["scheduler"])
+            epoch = state.get("epoch", 0)
+        elif "state_dict" in state:
+            sd = {k.replace("model.", "", 1): v for k, v in state["state_dict"].items()}
+            self.model.load_state_dict(sd)
+            epoch = state.get("epoch", 0)
+        else:
+            self.model.load_state_dict(state)
+            epoch = 0
+        print(f"Loaded checkpoint from {path} (epoch {epoch+1})")
+        return epoch
 
     # ---- Main loop ----
 
@@ -243,7 +253,7 @@ class Trainer:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/ncaltech101.yaml")
-    parser.add_argument("--resume", type=str, default="/home/imperator/Code/Ev_GNN_Detection/checkpoints/ncaltech101/best.pth")
+    parser.add_argument("--resume", type=str, default="/home/imperator/Code/Ev_GNN_Detection/checkpoints/ncaltech101/best-v1.ckpt")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -263,7 +273,7 @@ if __name__ == "__main__":
     trainer = Trainer(
         model=model,
         train_loader=datamodule.train_dataloader(),
-        val_loader=datamodule.val_dataloader(),
+        val_loader=datamodule.test_dataloader(),
         cfg=cfg,
     )
 
