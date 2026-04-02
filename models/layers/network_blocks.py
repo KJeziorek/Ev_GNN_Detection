@@ -34,7 +34,7 @@ class BaseConv(nn.Module):
     """A PointNet -> Batchnorm -> activation block"""
 
     def __init__(
-        self, in_channels, out_channels, bias=False, act="lrelu"
+        self, in_channels, out_channels, bias=False, act="relu"
     ):
         super().__init__()
 
@@ -50,20 +50,20 @@ class BaseConv(nn.Module):
 
 class BlockConv(nn.Module):
     def __init__(
-        self, in_channels, out_channels, act="lrelu"
+        self, in_channels, out_channels, act="relu"
     ):
         super().__init__()
-        self.in_channels = in_channels
+        self.in_channels = in_channels + 2
         self.out_channels = out_channels
 
-        self.conv1 = PointNetConv(in_channels, out_channels)
-        self.norm1 = BatchNorm(out_channels)
+        self.conv1 = PointNetConv(self.in_channels, self.out_channels)
+        self.norm1 = BatchNorm(self.out_channels)
 
-        self.conv2 = PointNetConv(out_channels, out_channels)
-        self.norm2 = BatchNorm(out_channels)
+        self.conv2 = PointNetConv(self.out_channels, self.out_channels)
+        self.norm2 = BatchNorm(self.out_channels)
 
-        self.linear = LinearX(in_channels, out_channels)
-        self.norm_linear = BatchNorm(out_channels)
+        self.linear = LinearX(self.in_channels, self.out_channels)
+        self.norm_linear = BatchNorm(self.out_channels)
 
         self.act = get_activation(act, inplace=True)
 

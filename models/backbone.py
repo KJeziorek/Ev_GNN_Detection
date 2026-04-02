@@ -43,15 +43,24 @@ class BACKBONE(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, LinearX):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, data: GraphData):
+        scale = data.pos.new_tensor([240.0, 180.0])
+
+        pos = data.pos.clone()
+        data.x = torch.cat((data.x, data.pos[:, :2] / scale), dim=1)
+        data.pos[:, :2] = data.pos[:, :2] / 5.0
         data = self.blocks[0](data)
+        data.pos = pos
+
         features = []
         for pool, block in zip(self.pools, self.blocks[1:]):
             data = pool(data)
+            scale = scale / pool.pool_size[:2].float().to(scale.device)
+            data.x = torch.cat((data.x, data.pos[:, :2] / scale), dim=1)
             data = block(data)
             features.append(data.clone())
         return features[-self.num_outputs:]

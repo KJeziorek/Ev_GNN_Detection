@@ -277,7 +277,7 @@ if __name__ == "__main__":
         cfg=cfg,
     )
 
-    if args.resume:
-        trainer.load_checkpoint(args.resume)
+    # if args.resume:
+    #     trainer.load_checkpoint(args.resume)
 
     trainer.validate(0)

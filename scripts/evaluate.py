@@ -107,51 +107,34 @@ else:
 backbone.eval()
 
 with torch.no_grad():
-    input_data = batch.clone()
+    scale = batch.pos.new_tensor([240.0, 180.0])
 
-    data = backbone.block1(batch)
-    after_block1 = data.clone()
+    stages = [("Input", batch.clone())]
 
-    data = backbone.pool1(data)
-    after_pool1 = data.clone()
+    data = batch.clone()
+    pos = data.pos.clone()
+    data.pos[:, :2] = data.pos[:, :2] / scale
+    data = backbone.blocks[0](data)
+    data.pos = pos
+    stages.append(("After block0", data.clone()))
 
-    data = backbone.block2(data)
-    after_block2 = data.clone()
+    for i, (pool, block) in enumerate(zip(backbone.pools, backbone.blocks[1:])):
+        data = pool(data)
+        scale = scale / pool.pool_size[:2].float().to(scale.device)
+        stages.append((f"After pool{i}", data.clone()))
 
-    data = backbone.pool2(data)
-    after_pool2 = data.clone()
-
-    data = backbone.block3(data)
-    after_block3 = data.clone()
-
-    data = backbone.pool3(data)
-    after_pool3 = data.clone()
-
-    data = backbone.block4(data)
-    after_block4 = data.clone()
-
-    data = backbone.pool4(data)
-    after_pool4 = data.clone()
-
-    data = backbone.block5(data)
-    after_block5 = data.clone()
+        pos = data.pos.clone()
+        data.pos[:, :2] = data.pos[:, :2] / scale
+        data = block(data)
+        data.pos = pos
+        stages.append((f"After block{i+1}", data.clone()))
 
 # ── plot ─────────────────────────────────────────────────────────────────────
 
-stages = [
-    ("Input",            input_data),
-    ("After block1",     after_block1),
-    ("After pool1",      after_pool1),
-    ("After block2",     after_block2),
-    ("After pool2",      after_pool2),
-    ("After block3",     after_block3),
-    ("After pool3",      after_pool3),
-    ("After block4",     after_block4),
-    ("After pool4",      after_pool4),
-    ("After block5",     after_block5),
-]
-
-fig, axes = plt.subplots(2, 5, figsize=(30, 12))
+n = len(stages)
+ncols = 5
+nrows = (n + ncols - 1) // ncols
+fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 6 * nrows))
 axes = axes.flatten()
 
 for ax, (title, data) in zip(axes, stages):
@@ -165,10 +148,10 @@ print("Saved to backbone_graph_vis.png")
 
 # ── 3D plot ─────────────────────────────────────────────────────────────────
 
-fig3d = plt.figure(figsize=(35, 14))
+fig3d = plt.figure(figsize=(7 * ncols, 7 * nrows))
 
 for i, (title, data) in enumerate(stages):
-    ax = fig3d.add_subplot(2, 5, i + 1, projection='3d')
+    ax = fig3d.add_subplot(nrows, ncols, i + 1, projection='3d')
     plot_graph_3d(data, title, ax)
 
 fig3d.suptitle("3D graph visualisation (x, y, t) through backbone stages", fontsize=16)

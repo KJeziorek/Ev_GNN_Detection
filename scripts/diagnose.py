@@ -286,7 +286,7 @@ def run_diagnostics(model, dataloader, device, num_batches=50):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/ncaltech101.yaml")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/ncaltech101/best.pth")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/ncaltech101/best-v6.ckpt")
     parser.add_argument("--num_batches", type=int, default=50)
     parser.add_argument("--split", choices=["val", "test", "train"], default="test")
     args = parser.parse_args()

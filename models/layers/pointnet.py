@@ -33,7 +33,12 @@ class PointNetConv(nn.Module):
 
         # Float layers — only things created at construction time
         self.linear = nn.Linear(in_channels + 2, out_channels, bias=True)
-        self.global_nn = nn.Linear(out_channels, out_channels, bias=bias)
+        # self.global_nn = nn.Linear(out_channels, out_channels, bias=bias)
+        self.global_nn = nn.Sequential(
+            nn.Linear(out_channels, out_channels*2, bias=bias),
+            nn.ReLU(inplace=True),
+            nn.Linear(out_channels*2, out_channels, bias=bias),
+        )
 
     # ------------------------------------------------------------------
     # Forward passes
@@ -45,14 +50,17 @@ class PointNetConv(nn.Module):
         ) -> GraphData:
 
         x, pos, edge_index = data.x, data.pos[:, :2], data.edge_index
-
         pos_i = pos[edge_index[:, 0]]
         pos_j = pos[edge_index[:, 1]]
         x_j = x[edge_index[:, 1]]
         msg = torch.cat((x_j, pos_j - pos_i), dim=1)
         msg = self.linear(msg)
         out = self._scatter_amax(msg, edge_index)
+
+        out_skip = out.clone()  # for potential skip connection
         out = self.global_nn(out)
+        out = out + out_skip  # skip connection
+
         data.x = out
         return data
 
