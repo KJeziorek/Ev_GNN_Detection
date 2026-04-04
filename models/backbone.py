@@ -48,19 +48,19 @@ class BACKBONE(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, data: GraphData):
-        scale = data.pos.new_tensor([240.0, 180.0])
+        # scale = data.pos.new_tensor([240.0, 180.0])
 
         pos = data.pos.clone()
-        data.x = torch.cat((data.x, data.pos[:, :2] / scale), dim=1)
-        data.pos[:, :2] = data.pos[:, :2] / 5.0
+        # data.x = torch.cat((data.x, data.pos[:, :2] / scale), dim=1)
+        # data.pos[:, :2] = data.pos[:, :2] / 5.0
         data = self.blocks[0](data)
         data.pos = pos
 
         features = []
         for pool, block in zip(self.pools, self.blocks[1:]):
             data = pool(data)
-            scale = scale / pool.pool_size[:2].float().to(scale.device)
-            data.x = torch.cat((data.x, data.pos[:, :2] / scale), dim=1)
+            # scale = scale / pool.pool_size[:2].float().to(scale.device)
+            # data.x = torch.cat((data.x, data.pos[:, :2] / scale), dim=1)
             data = block(data)
             features.append(data.clone())
         return features[-self.num_outputs:]

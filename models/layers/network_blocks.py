@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from utils.data import GraphData
 from models.layers.pointnet import PointNetConv
+from models.layers.moeconv import MoEConv
 from models.layers.minmaxconv import MinMaxConv
 from models.layers.linear import LinearX
 from models.layers.norm import BatchNorm
@@ -38,7 +39,7 @@ class BaseConv(nn.Module):
     ):
         super().__init__()
 
-        self.conv = PointNetConv(in_channels, out_channels, bias)
+        self.conv = MoEConv(in_channels, out_channels, bias=bias)
         self.norm = BatchNorm(out_channels)
         self.act = get_activation(act, inplace=True)
 
@@ -53,13 +54,13 @@ class BlockConv(nn.Module):
         self, in_channels, out_channels, act="relu"
     ):
         super().__init__()
-        self.in_channels = in_channels + 2
+        self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.conv1 = PointNetConv(self.in_channels, self.out_channels)
+        self.conv1 = MoEConv(self.in_channels, self.out_channels)
         self.norm1 = BatchNorm(self.out_channels)
 
-        self.conv2 = PointNetConv(self.out_channels, self.out_channels)
+        self.conv2 = MoEConv(self.out_channels, self.out_channels)
         self.norm2 = BatchNorm(self.out_channels)
 
         self.linear = LinearX(self.in_channels, self.out_channels)

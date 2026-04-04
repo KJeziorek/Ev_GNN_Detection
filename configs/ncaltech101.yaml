@@ -22,8 +22,8 @@ augmentation:
   translate_size: [0.1, 0.1]
 
 graph:
-  radius_x: 3
-  radius_y: 3
+  radius_x: 5
+  radius_y: 5
   radius_t: 10
 
 model:
@@ -32,13 +32,13 @@ model:
 
 backbone:
   # channels[i] = output channels of block i (block0 input is always 1)
-  channels: [36, 72, 72, 144, 144]
+  channels: [16, 32, 64, 64, 64]
   # pool_sizes[i] = [stride_x, stride_y, stride_t] applied before block i+1
   pool_sizes:
-    - [5.0, 5.0, 10.0]   # pool1: 240→48, 180→36
+    - [4.2858, 4.5, 10.0]   # pool1: 240→48, 180→36
     - [2.0, 2.0, 10.0]    # pool2: 48→24,  36→18
     - [2.0, 2.0, 10.0]    # pool3: 24→12,  18→9
-    - [1.0, 1.0, 1.0]    # pool4: identity (no spatial reduction)
+    - [2.0, 2.0, 1.0]    # pool4: identity (no spatial reduction)
 
 head:
   # Number of detection scales = len(strides) = len(in_channels).
@@ -53,8 +53,8 @@ head:
   #
   # Three-scale example:
   #   strides: [5, 10, 20]   in_channels: [128, 256, 256]  → backbone.channels[-3:]
-  strides: [10, 20]
-  in_channels: [144, 144]
+  strides: [18, 36]
+  in_channels: [64, 64]
   sparse_cfg:
     max_fg_per_gt: null        # null = unlimited
     fg_selection: recent       # recent | random | iou
@@ -68,10 +68,10 @@ training:
   num_workers: 16
   epochs: 801
   learning_rate: 0.001
-  weight_decay: 0.00005
+  weight_decay: 0.0005
   momentum: 0.9
   scheduler: yoloxwarmcos
-  warmup_epochs: 5
+  warmup_epochs: 50
   warmup_lr: 0
   min_lr_ratio: 0.05
   no_aug_epochs: 15

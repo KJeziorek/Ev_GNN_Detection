@@ -121,6 +121,7 @@ with torch.no_grad():
     for i, (pool, block) in enumerate(zip(backbone.pools, backbone.blocks[1:])):
         data = pool(data)
         scale = scale / pool.pool_size[:2].float().to(scale.device)
+        # scale = scale / torch.tensor([pool.pool_x, pool.pool_y]).to(scale.device)
         stages.append((f"After pool{i}", data.clone()))
 
         pos = data.pos.clone()
