@@ -80,36 +80,25 @@ class MoEConv(nn.Module):
         msg_input = x_j
 
         # ---- Gating ----
-        gate_logits = self.gate(diff_pos)                          # (E, num_kernels)
-        topk_vals, topk_idx = torch.topk(gate_logits, self.top_k, dim=1)  # (E, top_k)
-        topk_weights = torch.softmax(topk_vals, dim=1)             # (E, top_k)
+        gate_logits = self.gate(diff_pos)                                  # (E, num_kernels)
+        _, topk_idx = torch.topk(gate_logits, self.top_k, dim=1)          # (E, top_k)
 
         # ---- Expert application ----
-        # Group edges by their selected expert instead of gathering a full
-        # (E, top_k, in_dim, out_dim) weight tensor — that would be O(E × channels²)
-        # and blows up memory for large E and channel sizes.
+        # Fuse all experts into one GEMM: (E, in) @ (in, num_kernels*out) → (E, num_kernels*out)
+        # Memory: O(E × num_kernels × out) — avoids OOM for large E.
         E = msg_input.size(0)
-        msg = torch.zeros(E, self.out_channels,
-                          dtype=msg_input.dtype, device=msg_input.device)
+        expert_w = self.expert_weights.to(msg_input.dtype)                 # (num_kernels, in, out)
+        w_fused = expert_w.permute(1, 0, 2).reshape(self.in_channels, self.num_kernels * self.out_channels)
+        all_out = (msg_input @ w_fused).view(E, self.num_kernels, self.out_channels)  # (E, num_kernels, out)
 
-        for ki in range(self.top_k):
-            expert_idx = topk_idx[:, ki]      # (E,) — which expert each edge uses
-            weight_col = topk_weights[:, ki]  # (E,) — its softmax coefficient
-
-            acc = torch.zeros_like(msg).to(msg_input.dtype)
-            for k in range(self.num_kernels):
-                mask = expert_idx == k
-                if mask.any():
-                    # autocast may run matmul in fp16 even with fp32 inputs;
-                    # cast result back to acc.dtype to avoid index-put dtype mismatch.
-                    acc[mask] = (msg_input[mask] @ self.expert_weights[k].to(msg_input.dtype)).to(acc.dtype)
-
-            msg = msg + acc * weight_col.unsqueeze(-1)
+        # Gather top-k expert outputs and sum them — no softmax weighting.
+        idx = topk_idx.unsqueeze(-1).expand(-1, -1, self.out_channels)    # (E, top_k, out)
+        msg = all_out.gather(1, idx).sum(dim=1)                           # (E, out)
 
         # ---- Aggregation + global MLP ----
         out = self._scatter_amax(msg, edge_index)
 
-        out_skip = out.clone()
+        out_skip = out
         out = self.global_nn(out)
         out = out + out_skip  # skip connection
 
